@@ -1,4 +1,3 @@
-
 import argparse
 import cv2
 import os
@@ -15,6 +14,10 @@ VENV_SCRIPTS_PATH = r"D:\daima\Lama_Cleaner\.venv\Scripts"
 IOPAINT_EXE = os.path.join(VENV_SCRIPTS_PATH, "iopaint.exe")
 MODEL_DIR = r"D:\daima\Lama_Cleaner"
 WORK_BASE_DIR = r"D:\daima\Lama_Cleaner\mengban"
+
+# [新增] FFmpeg 可执行文件的精确路径
+FFMPEG_EXE = r"D:\daima\Lama_Cleaner\ffmpeg_binaries\ffmpeg.exe"
+
 MASK_FILES = {
     1: os.path.join(WORK_BASE_DIR, "mask1.png"),
     2: os.path.join(WORK_BASE_DIR, "mask2.png"),
@@ -22,24 +25,46 @@ MASK_FILES = {
 }
 SUPPORTED_VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv']
 
-# [修改] 将命令执行封装成一个独立的函数，以便并发调用
 def execute_iopaint_task(command):
     """执行单个 iopaint 命令任务，为并发池设计"""
-    # 使用 subprocess.run 等待命令完成，并捕获输出
     result = subprocess.run(
         command,
         capture_output=True,
         text=True,
         encoding='utf-8',
         errors='replace',
-        check=False # 我们手动检查返回码
+        check=False
     )
-    # 返回命令的执行结果
     return result
+
+def run_ffmpeg_command(command):
+    """执行一个 FFmpeg 命令，返回是否成功"""
+    print(f"\n[执行 FFmpeg 命令]: {' '.join(command)}")
+    try:
+        result = subprocess.run(
+            command, 
+            capture_output=True, 
+            text=True, 
+            encoding='utf-8', 
+            errors='replace',
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"FFmpeg 命令执行失败。返回码: {result.returncode}", file=sys.stderr)
+            print(f"FFmpeg 输出:\n{result.stderr}", file=sys.stderr)
+            return False
+        print("FFmpeg 命令成功执行。")
+        return True
+    except FileNotFoundError:
+        print(f"错误: '{command[0]}' 命令未找到。请确认 FFMPEG_EXE 的路径是否正确。", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"执行 FFmpeg 时发生未知错误: {e}", file=sys.stderr)
+        return False
 
 def process_single_video(video_path):
     """处理单个视频文件的核心逻辑"""
-    start_time = time.time() # [新增] 记录开始时间
+    start_time = time.time()
     print(f"\n{'='*30}")
     print(f"开始处理视频: {os.path.basename(video_path)}")
     print(f"{ '='*30}")
@@ -94,7 +119,6 @@ def process_single_video(video_path):
         cap.release()
         print(f"帧提取和分组完成，共 {frame_count} 帧。")
 
-        # [修改] 使用并发处理蒙版组
         print("\n--- 开始并发处理蒙版组 (最多2个进程) ---")
         tasks = []
         with ProcessPoolExecutor(max_workers=2) as executor:
@@ -125,21 +149,37 @@ def process_single_video(video_path):
 
         print("\n--- 所有蒙版组处理完成 ---")
 
-        print("开始将处理后的帧合成为新视频...")
-        temp_output_video_path = os.path.join(temp_work_dir, "final_video.mp4")
+        print("开始将处理后的帧合成为无声视频...")
+        silent_video_path = os.path.join(temp_work_dir, "silent_video.mp4")
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(temp_output_video_path, fourcc, fps, (frame_width, frame_height))
+        out = cv2.VideoWriter(silent_video_path, fourcc, fps, (frame_width, frame_height))
 
         processed_frames = sorted(glob.glob(os.path.join(processed_frames_dir, '*.png')))
         for frame_path in processed_frames:
             frame = cv2.imread(frame_path)
             out.write(frame)
         out.release()
-        print(f"新视频合成完毕: {temp_output_video_path}")
+        print(f"无声视频合成完毕: {silent_video_path}")
 
-        print(f"正在用新视频覆盖原视频: {video_path}")
-        shutil.move(temp_output_video_path, video_path)
+        final_video_path = os.path.join(temp_work_dir, "final_video.mp4")
+        temp_audio_path = os.path.join(temp_work_dir, "original_audio.aac")
+
+        extract_audio_command = [FFMPEG_EXE, '-i', video_path, '-vn', '-acodec', 'copy', temp_audio_path, '-y']
+        audio_exists = run_ffmpeg_command(extract_audio_command)
+
+        if audio_exists:
+            print("合并视频和音频...")
+            merge_command = [FFMPEG_EXE, '-i', silent_video_path, '-i', temp_audio_path, '-c:v', 'copy', '-c:a', 'copy', final_video_path, '-y']
+            if not run_ffmpeg_command(merge_command):
+                print("警告: 音频合并失败，将使用无声视频。", file=sys.stderr)
+                shutil.copy(silent_video_path, final_video_path)
+        else:
+            print("原视频没有音轨或提取失败，直接使用无声视频。" )
+            shutil.copy(silent_video_path, final_video_path)
+
+        print(f"正在用最终视频覆盖原视频: {video_path}")
+        shutil.move(final_video_path, video_path)
         print("覆盖成功！")
         return True
 
@@ -147,15 +187,24 @@ def process_single_video(video_path):
         print(f"处理视频 {os.path.basename(video_path)} 时发生严重错误: {e}", file=sys.stderr)
         return False
     finally:
-        # [新增] 计时功能
         end_time = time.time()
         duration = end_time - start_time
-        print(f"清理临时工作目录: {temp_work_dir}")
-        shutil.rmtree(temp_work_dir, ignore_errors=True)
+        print(f"准备清理临时工作目录: {temp_work_dir}")
+        if os.path.abspath(WORK_BASE_DIR) in os.path.abspath(temp_work_dir) and os.path.abspath(temp_work_dir) != os.path.abspath(WORK_BASE_DIR):
+            shutil.rmtree(temp_work_dir, ignore_errors=True)
+            print("临时目录清理完毕。")
+        else:
+            print(f"[安全警告] 清理被跳过：目录 {temp_work_dir} 不在预期的工作区内。", file=sys.stderr)
+        
         print(f"视频 {os.path.basename(video_path)} 处理流程结束，总耗时: {duration:.2f} 秒。")
 
 def main():
     """主函数，解析参数并启动处理流程"""
+    if not os.path.exists(FFMPEG_EXE):
+        print(f"[致命错误] 启动检查失败: 未在指定路径找到 'ffmpeg.exe'。", file=sys.stderr)
+        print(f"期望路径: {FFMPEG_EXE}", file=sys.stderr)
+        sys.exit(1)
+
     for i, m_path in MASK_FILES.items():
         if not os.path.exists(m_path):
             print(f"[致命错误] 启动检查失败: 蒙版文件 {i} 不存在于 {m_path}", file=sys.stderr)
