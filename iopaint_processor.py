@@ -27,13 +27,18 @@ SUPPORTED_VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv']
 
 def execute_iopaint_task(command):
     """执行单个 iopaint 命令任务，为并发池设计"""
+    creation_flags = 0
+    if sys.platform == "win32":
+        creation_flags = subprocess.CREATE_NO_WINDOW
+
     result = subprocess.run(
         command,
         capture_output=True,
         text=True,
         encoding='utf-8',
         errors='replace',
-        check=False
+        check=False,
+        creationflags=creation_flags
     )
     return result
 
@@ -41,13 +46,18 @@ def run_ffmpeg_command(command):
     """执行一个 FFmpeg 命令，返回是否成功"""
     print(f"\n[执行 FFmpeg 命令]: {' '.join(command)}")
     try:
+        creation_flags = 0
+        if sys.platform == "win32":
+            creation_flags = subprocess.CREATE_NO_WINDOW
+
         result = subprocess.run(
             command, 
             capture_output=True, 
             text=True, 
             encoding='utf-8', 
             errors='replace',
-            check=False
+            check=False,
+            creationflags=creation_flags
         )
         if result.returncode != 0:
             print(f"FFmpeg 命令执行失败。返回码: {result.returncode}", file=sys.stderr)
@@ -165,18 +175,39 @@ def process_single_video(video_path):
         final_video_path = os.path.join(temp_work_dir, "final_video.mp4")
         temp_audio_path = os.path.join(temp_work_dir, "original_audio.aac")
 
-        extract_audio_command = [FFMPEG_EXE, '-i', video_path, '-vn', '-acodec', 'copy', temp_audio_path, '-y']
+        # For FFmpeg, use forward slashes in paths to avoid issues.
+        video_path_ffmpeg = video_path.replace('\\', '/')
+        temp_audio_path_ffmpeg = temp_audio_path.replace('\\', '/')
+        silent_video_path_ffmpeg = silent_video_path.replace('\\', '/')
+        final_video_path_ffmpeg = final_video_path.replace('\\', '/')
+
+        extract_audio_command = [FFMPEG_EXE, '-i', video_path_ffmpeg, '-vn', '-acodec', 'copy', temp_audio_path_ffmpeg, '-y']
         audio_exists = run_ffmpeg_command(extract_audio_command)
 
+        # 定义通用的高质量、高兼容性的 H.264 编码参数
+        video_encoding_options = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-pix_fmt', 'yuv420p']
+
         if audio_exists:
-            print("合并视频和音频...")
-            merge_command = [FFMPEG_EXE, '-i', silent_video_path, '-i', temp_audio_path, '-c:v', 'copy', '-c:a', 'copy', final_video_path, '-y']
+            print("使用 H.264 重新编码视频并合并音频...")
+            merge_command = [
+                FFMPEG_EXE, '-i', silent_video_path_ffmpeg, '-i', temp_audio_path_ffmpeg,
+                *video_encoding_options,
+                '-c:a', 'copy',
+                final_video_path_ffmpeg, '-y'
+            ]
             if not run_ffmpeg_command(merge_command):
-                print("警告: 音频合并失败，将使用无声视频。", file=sys.stderr)
+                print("警告: 视频编码或音频合并失败，将尝试使用未重新编码的视频。", file=sys.stderr)
                 shutil.copy(silent_video_path, final_video_path)
         else:
-            print("原视频没有音轨或提取失败，直接使用无声视频。" )
-            shutil.copy(silent_video_path, final_video_path)
+            print("原视频没有音轨，使用 H.264 重新编码无声视频...")
+            reencode_command = [
+                FFMPEG_EXE, '-i', silent_video_path_ffmpeg,
+                *video_encoding_options,
+                final_video_path_ffmpeg, '-y'
+            ]
+            if not run_ffmpeg_command(reencode_command):
+                print("警告: 无声视频编码失败，将尝试使用未重新编码的视频。", file=sys.stderr)
+                shutil.copy(silent_video_path, final_video_path)
 
         print(f"正在用最终视频覆盖原视频: {video_path}")
         shutil.move(final_video_path, video_path)
