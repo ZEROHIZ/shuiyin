@@ -190,31 +190,10 @@ app.post("/api/render-with-preset", async (req, res) => {
     };
     await writeFile(propsFilePath, JSON.stringify(inputProps));
 
-    console.log("开始预览渲染...");
-    const remotionProcess = spawn(
-      "npx",
-      [
-        "remotion",
-        "render",
-        compositionId || "ApiDrivenVideo",
-        outputLocation,
-        `--props=${propsFilePath}`,
-      ],
-      { shell: true, stdio: "inherit" }
-    );
-
-    remotionProcess.on("close", (code) => {
-        if (code === 0) {
-            res.json({ message: "渲染成功", outputUrl: `/${basename(outputLocation)}` });
-        } else {
-            console.warn(`[Node.js] Remotion 渲染跳过或失败 (码 ${code})，但 Python 处理后的视频已就绪。`);
-            // 兜底方案：如果 Remotion 渲染失败，直接返回 Python 合成的 final_video.mp4
-            res.json({ 
-                message: "处理完成 (Remotion 预览跳过)", 
-                outputUrl: `/${basename(outputLocation)}`, 
-                note: "视频已由 Python/FFmpeg 成功合成并覆盖原文件。"
-            });
-        }
+    res.json({ 
+        message: "处理完成", 
+        outputUrl: `/temp/${basename(originalVideoPath)}`, 
+        note: "视频已由 Python/FFmpeg 成功合成并覆盖原文件。"
     });
 
   } catch (err) {
@@ -343,27 +322,11 @@ app.post("/render", async (req, res) => {
     const propsFilePath = join(tempDir, `props_${Date.now()}.json`);
     await writeFile(propsFilePath, JSON.stringify(inputProps));
 
-    console.log("开始调用 Remotion CLI 进行渲染...");
-    const remotionProcess = spawn(
-      "npx",
-      [
-        "remotion",
-        "render",
-        compositionId,
-        outputLocation,
-        `--props=${propsFilePath}`,
-      ],
-      { shell: true, stdio: "inherit" }
-    );
-
-    remotionProcess.on("close", (code) => {
-      if (code === 0) {
-        console.log(`渲染成功！文件位于: ${outputLocation}`);
-        res.send({ message: "渲染成功", outputUrl: `/${basename(outputLocation)}` });
-      } else {
-        console.error(`渲染失败，Remotion CLI 退出码: ${code}`);
-        res.status(500).send({ message: `渲染失败，退出码: ${code}` });
-      }
+    // 直接返回成功响应，因为 Python 脚本已经处理了文件覆盖
+    res.send({ 
+      message: "渲染成功", 
+      outputUrl: inputProps.videos && inputProps.videos.length > 0 ? `/${inputProps.videos[0]}` : null,
+      note: "视频已由 Python 脚本处理完成。"
     });
   } catch (error) {
     console.error("渲染过程中发生严重错误:", error);

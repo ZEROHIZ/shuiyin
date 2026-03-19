@@ -316,7 +316,16 @@ def process_single_video(video_path, mask_ranges=None):
                 print("警告: 无声视频编码失败，将尝试使用未重新编码的视频。", file=sys.stderr)
                 shutil.copy(silent_video_path, final_video_path)
 
-        print("覆盖成功！", flush=True)
+        if os.path.exists(final_video_path):
+            try:
+                shutil.copy2(final_video_path, video_path)
+                print(f"覆盖成功！已将处理后的视频保存至: {video_path}", flush=True)
+            except Exception as e:
+                print(f"覆盖原始文件失败: {e}", file=sys.stderr, flush=True)
+                return False
+        else:
+            print(f"错误: 未找到最终合成视频 {final_video_path}", file=sys.stderr, flush=True)
+            return False
         return True
 
     except Exception as e:

@@ -41,3 +41,7 @@
 - **Issue**: Python output in the Node.js console was showing garbled characters on Windows.
 - **Cause**: Mismatch between Python's default encoding (often GBK on Chinese Windows) and Node.js's UTF-8 expectation.
 - **Solution**: Set `PYTHONIOENCODING: 'utf-8'` in the environment variables when spawning the Python process.
+## 10. Remotion Rendering Failure & Python Overwrite Missing
+- **Issue**: Rendering failed with "could not determine executable to run" because of missing Remotion dependencies and composition.
+- **Cause**: The project attempted to use `npx remotion` for a composition that wasn't defined, and the Python processing script did not actually overwrite the original file, causing even the fallback to return unprocessed or missing files.
+- **Solution**: Removed the unnecessary Remotion dependency since functionality exists in Python/FFmpeg. Updated `iopaint_processor.py` to correctly overwrite the input file using `shutil.copy2` after successful synthesis. Simplified `server.js` to return the processed file path directly.
