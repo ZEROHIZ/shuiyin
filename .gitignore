@@ -6,7 +6,7 @@ __pycache__/
 node_modules
 # Virtual Environment
 .venv/
-
+/public/temp
 # Build artifacts
 build/
 dist/

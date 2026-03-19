@@ -143,6 +143,39 @@ app.post("/api/presets", async (req, res) => {
   }
 });
 
+// --- 原生文件选择接口 (Windows) ---
+app.get("/api/select-path", async (req, res) => {
+  try {
+    // 使用 PowerShell 弹出原生保存对话框
+    const psScript = `
+      Add-Type -AssemblyName System.Windows.Forms;
+      $f = New-Object System.Windows.Forms.SaveFileDialog;
+      $f.Filter = 'Video files (*.mp4)|*.mp4|All files (*.*)|*.*';
+      $f.Title = '选择保存视频的位置';
+      $f.FileName = 'processed_video.mp4';
+      $res = $f.ShowDialog();
+      if($res -eq 'OK') { Write-Output $f.FileName }
+    `;
+    
+    const child = spawn('powershell', ['-Command', psScript], { windowsHide: true });
+    let output = '';
+    child.stdout.on('data', (data) => {
+        output += data.toString();
+    });
+    
+    child.on('close', (code) => {
+        const selectedPath = output.trim();
+        if (code === 0 && selectedPath) {
+            res.json({ path: selectedPath });
+        } else {
+            res.json({ path: null }); // 用户取消或失败
+        }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- 简单的文件上传接口 ---
 app.post("/api/upload", express.raw({ type: 'video/*', limit: '100mb' }), async (req, res) => {
   try {
@@ -158,7 +191,7 @@ app.post("/api/upload", express.raw({ type: 'video/*', limit: '100mb' }), async 
 
 app.post("/api/render-with-preset", async (req, res) => {
   try {
-    const { videoUrl, presetName, compositionId } = req.body;
+    const { videoUrl, presetName, compositionId, outputPath } = req.body;
     const outputLocation = join(outputDir, `rendered_${Date.now()}.mp4`);
     
     // 1. 获取预设配置
@@ -180,7 +213,7 @@ app.post("/api/render-with-preset", async (req, res) => {
 
     // 4. 调用 Python 处理
     const rangeStr = (presetData.masks || []).map(m => `${m.startTime || 0}-${m.endTime || 0}`).join(',');
-    await processVideosWithPython(tempDir, maskPaths, rangeStr, originalVideoPath);
+    await processVideosWithPython(tempDir, maskPaths, rangeStr, originalVideoPath, outputPath);
 
     // 5. 调用 Remotion 渲染
     const propsFilePath = join(tempDir, `props_${Date.now()}.json`);
@@ -192,8 +225,8 @@ app.post("/api/render-with-preset", async (req, res) => {
 
     res.json({ 
         message: "处理完成", 
-        outputUrl: `/temp/${basename(originalVideoPath)}`, 
-        note: "视频已由 Python/FFmpeg 成功合成并覆盖原文件。"
+        outputUrl: outputPath ? outputPath : `/temp/${basename(originalVideoPath)}`, 
+        note: outputPath ? `视频已保存至: ${outputPath}` : "视频已由 Python/FFmpeg 成功合成并覆盖原文件。"
     });
 
   } catch (err) {
@@ -202,7 +235,7 @@ app.post("/api/render-with-preset", async (req, res) => {
   }
 });
 
-const processVideosWithPython = (directory, maskPaths = [], maskRanges = "", videoPath = "") => {
+const processVideosWithPython = (directory, maskPaths = [], maskRanges = "", videoPath = "", outputPath = "") => {
    return new Promise((resolve, reject) => {
      // [修改] 指定虚拟环境中的 Python.exe 的绝对路径
      const pythonExePath = 'D:/daima/Lama_Cleaner/.venv/Scripts/python.exe';
@@ -222,6 +255,10 @@ const processVideosWithPython = (directory, maskPaths = [], maskRanges = "", vid
       if (maskRanges) {
           args.push('--mask-ranges', maskRanges);
           console.log(`[Node.js] 传递动态遮罩: ${maskPaths.length} 个, 范围: ${maskRanges}`);
+      }
+      if (outputPath) {
+          args.push('--output', outputPath);
+          console.log(`[Node.js] 指定输出路径: ${outputPath}`);
       }
       // 设置环境变量确保输出不缓存且使用 UTF-8 编码避免乱码
       const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
@@ -260,7 +297,7 @@ const processVideosWithPython = (directory, maskPaths = [], maskRanges = "", vid
 app.post("/render", async (req, res) => {
   console.log("收到渲染请求...", req.body);
   try {
-    const { compositionId, ...props } = req.body;
+    const { compositionId, outputPath, ...props } = req.body;
 
     if (!compositionId) {
       return res.status(400).send({ message: "缺少 compositionId" });
@@ -279,7 +316,7 @@ app.post("/render", async (req, res) => {
         // 按照组件逻辑，只使用数组的第一个元素
         const { fileName: videoFileName } = await download(apiVideos[0], tempDir, 'video');
 
-        await processVideosWithPython(tempDir);
+        await processVideosWithPython(tempDir, [], "", "", outputPath);
 
         let musicProps = [];
         if (apiMusic && Array.isArray(apiMusic) && apiMusic.length > 0) {
@@ -300,7 +337,7 @@ app.post("/render", async (req, res) => {
           return res.status(400).send({ message: "MultiVideoTemplate 模板缺少 videos 数组" });
         }
         const downloadedVideoFiles = await Promise.all(videos.map((url, i) => download(url, tempDir, `video_${i}`)));
-        await processVideosWithPython(tempDir);
+        await processVideosWithPython(tempDir, [], "", "", outputPath);
         let downloadedMusicFilePaths = [];
         if (music && Array.isArray(music) && music.length > 0) {
           const downloadedMusicFiles = await Promise.all(music.map((url, i) => download(url, tempDir, `music_${i}`)));

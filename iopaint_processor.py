@@ -120,7 +120,7 @@ def run_ffmpeg_command(command):
         print(f"执行 FFmpeg 时发生未知错误: {e}", file=sys.stderr)
         return False
 
-def process_single_video(video_path, mask_ranges=None):
+def process_single_video(video_path, mask_ranges=None, output_path=None):
     """处理单个视频文件的核心逻辑"""
     start_time = time.time()
     print(f"\n{'='*30}")
@@ -318,10 +318,11 @@ def process_single_video(video_path, mask_ranges=None):
 
         if os.path.exists(final_video_path):
             try:
-                shutil.copy2(final_video_path, video_path)
-                print(f"覆盖成功！已将处理后的视频保存至: {video_path}", flush=True)
+                dest_path = output_path if output_path else video_path
+                shutil.copy2(final_video_path, dest_path)
+                print(f"保存成功！视频已保存至: {dest_path}", flush=True)
             except Exception as e:
-                print(f"覆盖原始文件失败: {e}", file=sys.stderr, flush=True)
+                print(f"保存结果文件失败: {e}", file=sys.stderr, flush=True)
                 return False
         else:
             print(f"错误: 未找到最终合成视频 {final_video_path}", file=sys.stderr, flush=True)
@@ -366,6 +367,10 @@ def main():
     parser.add_argument(
         "--mask-ranges",
         help="逗号分隔的起止时间对，如 0-10,10-15。"
+    )
+    parser.add_argument(
+        "--output",
+        help="[可选] 指定最终生成视频的保存路径（包含文件名）。如果不指定，将覆盖原文件。"
     )
     args = parser.parse_args()
 
@@ -412,7 +417,7 @@ def main():
     
     all_success = True
     for video_path in video_files:
-        if not process_single_video(video_path, mask_ranges):
+        if not process_single_video(video_path, mask_ranges, args.output):
             all_success = False
     
     if all_success:
