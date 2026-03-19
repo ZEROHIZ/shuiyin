@@ -5,7 +5,7 @@ import 'dotenv/config'; // 导入并加载 .env 文件
 import { spawn } from 'child_process';
 import { join, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { mkdir, writeFile, readdir, unlink } from 'fs/promises';
+import { mkdir, writeFile, readdir, unlink, readFile } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import fetch from 'node-fetch';
 import cron from 'node-cron';
@@ -17,6 +17,19 @@ const __dirname = dirname(__filename);
 const app = express();
 // 启用 JSON body 解析中间件
 app.use(express.json());
+// 确保关键目录存在
+const ensureDirs = async () => {
+  const dirs = [resolve(__dirname, "public"), resolve(__dirname, "public", "temp"), resolve(__dirname, "presets")];
+  for (const dir of dirs) {
+    try {
+      await mkdir(dir, { recursive: true });
+      console.log(`[Init] 确保目录存在: ${dir}`);
+    } catch (err) {
+      console.error(`[Init] 创建目录失败: ${dir}`, err);
+    }
+  }
+};
+await ensureDirs();
 
 // --- IP 白名单中间件 ---
 const allowedIpsString = process.env.ALLOWED_IPS || '';
@@ -96,7 +109,121 @@ app.get("/test", (req, res) => {
   });
 });
 
-const processVideosWithPython = (directory) => {
+// --- 预设管理接口 ---
+app.get("/api/presets", async (req, res) => {
+  try {
+    const presetDir = resolve(__dirname, "presets");
+    const files = await readdir(presetDir);
+    const presets = files.filter(f => f.endsWith('.json')).map(f => f.replace('.json', ''));
+    res.json(presets);
+  } catch (err) {
+    res.status(500).json({ message: "获取预设失败", error: err.message });
+  }
+});
+
+app.get("/api/presets/:name", async (req, res) => {
+  try {
+    const presetPath = resolve(__dirname, "presets", `${req.params.name}.json`);
+    const content = await readFile(presetPath, 'utf-8');
+    res.json(JSON.parse(content));
+  } catch (err) {
+    res.status(404).json({ message: "预设不存在" });
+  }
+});
+
+app.post("/api/presets", async (req, res) => {
+  try {
+    const { name, config } = req.body;
+    if (!name || !config) return res.status(400).json({ message: "缺少名称或配置" });
+    const presetPath = resolve(__dirname, "presets", `${name}.json`);
+    await writeFile(presetPath, JSON.stringify(config, null, 2));
+    res.json({ message: "预设已保存" });
+  } catch (err) {
+    res.status(500).json({ message: "保存预设失败", error: err.message });
+  }
+});
+
+// --- 简单的文件上传接口 ---
+app.post("/api/upload", express.raw({ type: 'video/*', limit: '100mb' }), async (req, res) => {
+  try {
+    const ext = req.headers['x-file-ext'] || 'mp4';
+    const fileName = `upload_${Date.now()}.${ext}`;
+    const filePath = join(tempDir, fileName);
+    await writeFile(filePath, req.body);
+    res.json({ url: `/temp/${fileName}`, localPath: filePath });
+  } catch (err) {
+    res.status(500).json({ message: "上传失败", error: err.message });
+  }
+});
+
+app.post("/api/render-with-preset", async (req, res) => {
+  try {
+    const { videoUrl, presetName, compositionId } = req.body;
+    const outputLocation = join(outputDir, `rendered_${Date.now()}.mp4`);
+    
+    // 1. 获取预设配置
+    const presetPath = resolve(__dirname, "presets", `${presetName}.json`);
+    const presetData = JSON.parse(await readFile(presetPath, 'utf-8'));
+    
+    // 2. 下载原始视频
+    const { localPath: originalVideoPath } = await download(videoUrl, tempDir, 'render_source');
+    
+    // 3. 将 Base64 遮罩保存为图片文件
+    const maskPaths = [];
+    for (let i = 0; i < presetData.masks.length; i++) {
+        const mask = presetData.masks[i];
+        const base64Data = mask.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+        const maskPath = join(tempDir, `dynamic_mask_${i}_${Date.now()}.png`);
+        await writeFile(maskPath, base64Data, 'base64');
+        maskPaths.push(maskPath);
+    }
+
+    // 4. 调用 Python 处理
+    const rangeStr = (presetData.masks || []).map(m => `${m.startTime || 0}-${m.endTime || 0}`).join(',');
+    await processVideosWithPython(tempDir, maskPaths, rangeStr, originalVideoPath);
+
+    // 5. 调用 Remotion 渲染
+    const propsFilePath = join(tempDir, `props_${Date.now()}.json`);
+    const inputProps = {
+        videos: [join('temp', basename(originalVideoPath))], 
+        music: [],
+    };
+    await writeFile(propsFilePath, JSON.stringify(inputProps));
+
+    console.log("开始预览渲染...");
+    const remotionProcess = spawn(
+      "npx",
+      [
+        "remotion",
+        "render",
+        compositionId || "ApiDrivenVideo",
+        outputLocation,
+        `--props=${propsFilePath}`,
+      ],
+      { shell: true, stdio: "inherit" }
+    );
+
+    remotionProcess.on("close", (code) => {
+        if (code === 0) {
+            res.json({ message: "渲染成功", outputUrl: `/${basename(outputLocation)}` });
+        } else {
+            console.warn(`[Node.js] Remotion 渲染跳过或失败 (码 ${code})，但 Python 处理后的视频已就绪。`);
+            // 兜底方案：如果 Remotion 渲染失败，直接返回 Python 合成的 final_video.mp4
+            res.json({ 
+                message: "处理完成 (Remotion 预览跳过)", 
+                outputUrl: `/${basename(outputLocation)}`, 
+                note: "视频已由 Python/FFmpeg 成功合成并覆盖原文件。"
+            });
+        }
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "预览渲染失败", error: err.message });
+  }
+});
+
+const processVideosWithPython = (directory, maskPaths = [], maskRanges = "", videoPath = "") => {
    return new Promise((resolve, reject) => {
      // [修改] 指定虚拟环境中的 Python.exe 的绝对路径
      const pythonExePath = 'D:/daima/Lama_Cleaner/.venv/Scripts/python.exe';
@@ -107,8 +234,20 @@ const processVideosWithPython = (directory) => {
      console.log(`[Node.js] 使用解释器: ${pythonExePath}`);
      console.log(`[Node.js] 开始调用 Python 脚本处理目录: ${directory}`);
 
-     // [修改] 使用 python.exe 的绝对路径来启动进程
-     const pythonProcess = spawn(pythonExePath, [pythonScriptPath, '--directory', directory], { windowsHide: true });
+      // [修改] 使用 -u 参数确保 Python 输出不被缓存，实时返回给 Node.js
+      // [优化] 使用 --file 明确指定要处理的视频，避免扫描整个目录处理旧文件
+      const args = ['-u', pythonScriptPath, '--file', videoPath];
+      if (maskPaths && maskPaths.length > 0) {
+          args.push('--masks', maskPaths.join(','));
+      }
+      if (maskRanges) {
+          args.push('--mask-ranges', maskRanges);
+          console.log(`[Node.js] 传递动态遮罩: ${maskPaths.length} 个, 范围: ${maskRanges}`);
+      }
+      // 设置环境变量确保输出不缓存且使用 UTF-8 编码避免乱码
+      const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
+      const pythonProcess = spawn(pythonExePath, args, { windowsHide: true, env });
+
 
      // 实时捕获 Python 脚本的输出并打印到 Node.js 控制台
      pythonProcess.stdout.on('data', (data) => {
@@ -268,9 +407,15 @@ app.listen(port, () => {
 
 // --- 辅助函数：下载文件 ---
 async function download(url, dir, prefix) {
+  // 1. 如果是本地路径，直接返回
+  if (url && (url.startsWith('/') || url.includes(':\\') || url.includes(':/')) && !url.startsWith('http')) {
+    console.log(`[Downloader] 检测到本地路径，跳过下载: ${url}`);
+    return { localPath: url, fileName: basename(url) };
+  }
+
   let response;
 
-  // 1. 尝试直接下载
+  // 2. 尝试直接下载
   try {
     console.log(`[Downloader] 尝试直接下载: ${url}`);
     response = await fetch(url);

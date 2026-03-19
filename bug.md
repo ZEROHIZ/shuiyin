@@ -1,0 +1,43 @@
+# Bug Log & Lessons Learned
+
+## 1. Tool Interaction: replace_file_content failed in Python
+- **Issue**: Multiple attempts to replace the frame loop in `iopaint_processor.py` failed with "target content not found".
+- **Cause**: Indentation in Python is extremely sensitive. Even if the visual spaces look the same, hidden characters or slightly different indentation levels (e.g., 4 vs 8 spaces) in the `TargetContent` can cause failure.
+- **Solution**: Use `view_file` to get the EXACT raw string, or use `write_to_file` to overwrite the whole file when multiple complex replacements fail.
+
+## 2. Windows Path Handling in Node.js
+- **Issue**: `spawn('python', ...)` might fail if the virtual environment is not active or if the system PATH is configured differently.
+- **Solution**: Always use the absolute path to the virtual environment's executable: `D:/daima/Lama_Cleaner/.venv/Scripts/python.exe`.
+
+## 3. FFmpeg Path in Python (Windows)
+- **Issue**: FFmpeg might fail to find files if paths contain spaces or mixed slashes.
+- **Solution**: Use `.replace('\\', '/')` for paths passed to FFmpeg command line arguments for better compatibility across different shells.
+
+## 4. Canvas Offset in WebUI
+- **Issue**: Drawing on canvas might be offset if the parent container has padding/borders.
+- **Solution**: Use `getBoundingClientRect()` to calculate coordinates relative to the canvas element itself.
+
+## 5. Canvas Mask Alignment and Scaling
+- **Issue**: Captured masks did not align with video resolution or displayed scale in the UI.
+- **Cause**: Canvas element's CSS size didn't match the video's displayed size (e.g., when video was scaled by `max-height`), and presets lacked original dimensions for cross-resolution processing.
+- **Solution**: Force canvas CSS `width/height` to match video `clientWidth/clientHeight`. Perform 1:1 coordinate mapping to the intrinsic resolution. Implement auto-resizing in the backend processing script using `cv2.resize` when a size mismatch is detected.
+
+## 6. Downloader Local Path Conflict
+- **Issue**: `node-fetch` failed to "download" files when the URL was a local Windows path (e.g., `D:\...`).
+- **Cause**: `node-fetch` does not support the `d:` protocol (local drive letters).
+- **Solution**: Update the `download` helper function in `server.js` to detect local paths (non-http) and skip the fetch step, returning the local path directly.
+
+## 7. Python Output Buffering on Windows
+- **Issue**: Real-time progress logs from the Python script (e.g., `[Python]: ...`) were not appearing in the Node.js console until the process finished.
+- **Cause**: Python default stdout redirection is buffered.
+- **Solution**: Use the `-u` flag when spawning the Python process, set `PYTHONUNBUFFERED=1` in the logic's environment variables, and use `flush=True` in critical Python `print` statements.
+
+## 8. ReferenceError: outputLocation is not defined
+- **Issue**: The `/api/render-with-preset` endpoint failed with a `ReferenceError` when attempting to call Remotion.
+- **Cause**: `outputLocation` variable was missing in that specific route handler.
+- **Solution**: Defined `outputLocation` at the beginning of the request handler.
+
+## 9. Python Console Garbled Text (encoding)
+- **Issue**: Python output in the Node.js console was showing garbled characters on Windows.
+- **Cause**: Mismatch between Python's default encoding (often GBK on Chinese Windows) and Node.js's UTF-8 expectation.
+- **Solution**: Set `PYTHONIOENCODING: 'utf-8'` in the environment variables when spawning the Python process.
