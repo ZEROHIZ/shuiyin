@@ -2,10 +2,11 @@ import requests
 import time
 
 # ================= 配置区 =================
-API_URL = "http://127.0.0.1:7789"
-API_KEY = "lc-f3bc05b51ce626579837c1c56cb7f98e"  # 将这里替换为你申请的 API Key
-VIDEO_PATH = "C:\\Users\\Administrator\\Downloads\\生成猫游泳视频 (1).mp4"       # 你要处理的本地视频绝对路径，或者上传后返回的 /temp/xxx.mp4
-PRESET_NAME = "新版豆包"                   # 在前端保存的预设名称（不需要 .json 后缀）
+API_URL = "http://192.168.110.30:7789"
+API_KEY = "lc-1da4365283d17387b13b4c67cf33a9a7"  # 将这里替换为你申请的 API Key
+# VIDEO_PATH = "C:\\Users\\Administrator\\Downloads\\生成猫游泳视频 (1).mp4"
+VIDEO_PATH = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4" 
+PRESET_NAME = "测试"                   # 在前端保存的预设名称（不需要 .json 后缀）
 # ==========================================
 
 def test_api():

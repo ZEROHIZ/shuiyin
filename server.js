@@ -144,6 +144,11 @@ const createTask = (videoName, presetName, videoPath) => {
   return task;
 };
 
+// 检查是否为远程 URL
+const isRemoteUrl = (url) => {
+    return url && (url.startsWith('http://') || url.startsWith('https://'));
+};
+
 // === 任务队列调度器 ===
 const processQueue = async () => {
   if (runningCount >= config.maxConcurrency) return;
@@ -175,6 +180,17 @@ const processQueue = async () => {
     await log('ERROR', `任务 ${nextTask.id} 失败: ${err.message}`);
   } finally {
     runningCount--;
+    
+    // 如果该任务是下载的临时文件，处理完后自动清理原文件
+    if (nextTask.isDownloaded && nextTask.videoPath && existsSync(nextTask.videoPath)) {
+        try {
+            unlinkSync(nextTask.videoPath);
+            await log('INFO', `清理下载的临时视频文件: ${nextTask.videoPath}`);
+        } catch (e) {
+            await log('ERROR', `清理临时文件失败: ${e.message}`);
+        }
+    }
+
     await saveTasks();
     processQueue(); // 继续处理队列中的下一个
   }
@@ -509,10 +525,24 @@ app.delete("/api/tasks", async (req, res) => {
 app.post("/api/tasks", async (req, res) => {
   try {
     const { videoUrl, videoLocalPath, presetName } = req.body;
-    const videoPath = videoLocalPath || videoUrl;
+    let videoPath = videoLocalPath || videoUrl;
     if (!videoPath) return res.status(400).json({ message: "缺少视频路径" });
-    const videoName = basename(videoPath);
+    
+    let isDownloaded = false;
+    let videoName = basename(videoPath);
+
+    // 如果是远程 URL，则先下载到临时目录
+    if (isRemoteUrl(videoPath)) {
+        await log('INFO', `检测到远程 URL，开始下载: ${videoPath}`);
+        const downloadResult = await download(videoPath, TEMP_DIR, 'api_down');
+        videoPath = downloadResult.localPath;
+        videoName = downloadResult.fileName;
+        isDownloaded = true;
+    }
+
     const task = createTask(videoName, presetName, videoPath);
+    if (isDownloaded) task.isDownloaded = true; // 标记为已下载，方便后续自动清理
+
     await log('INFO', `新任务已入队: ${task.id} (${videoName})`);
     res.json({ message: "任务已加入队列", taskId: task.id, task });
   } catch (err) {
