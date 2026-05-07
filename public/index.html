@@ -14,6 +14,11 @@
         .canvas-container { position: relative; cursor: crosshair; display: flex; align-items: center; justify-content: center; }
         #mask-canvas { position: absolute; pointer-events: none; opacity: 0.6; z-index: 10; }
         .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .modal-overlay { background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px); }
+        
+        /* 隐藏滚动条但保留功能 */
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 </head>
 <body>
@@ -32,11 +37,18 @@
             const [duration, setDuration] = useState(0);
             const [presets, setPresets] = useState([]);
             const [currentPreset, setCurrentPreset] = useState("");
-            const [isRendering, setIsRendering] = useState(false);
+            const [isSubmitting, setIsSubmitting] = useState(false);
             const [trimRange, setTrimRange] = useState([0, 0]);
-            const [capturedMasks, setCapturedMasks] = useState([]); // { time, dataUrl }
+            const [capturedMasks, setCapturedMasks] = useState([]);
             const [previewImage, setPreviewImage] = useState(null);
-            const [outputPath, setOutputPath] = useState(""); 
+            // Tasks & Settings state
+            const [tasks, setTasks] = useState([]);
+            const [showSettings, setShowSettings] = useState(false);
+            const [settings, setSettings] = useState({ maxConcurrency: 2, cleanupIntervalHours: 24, cleanupMaxAgeHours: 24 });
+            const [apiKeys, setApiKeys] = useState([]);
+            const [newKeyName, setNewKeyName] = useState("");
+            const [generatedKey, setGeneratedKey] = useState(null); // 新增状态用于展示刚生成的 key
+            const [activeTab, setActiveTab] = useState('editor'); // 新增 Tab 状态
 
             const videoRef = useRef(null);
             const canvasRef = useRef(null);
@@ -47,17 +59,16 @@
             const [isPanning, setIsPanning] = useState(false);
             const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
 
-            // 初始化画笔上下文
+            // Initialize canvas
             useEffect(() => {
                 const canvas = canvasRef.current;
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d');
                 ctx.strokeStyle = 'red';
                 ctx.lineCap = 'round';
-                ctx.lineJoin = 'round'; // Preserve lineJoin
+                ctx.lineJoin = 'round';
                 ctxRef.current = ctx;
 
-                // 阻止浏览器缩放
                 const container = containerRef.current;
                 const handleWheelNative = (e) => {
                     if (e.ctrlKey) {
@@ -72,14 +83,27 @@
                 return () => {
                     if (container) container.removeEventListener('wheel', handleWheelNative);
                 };
-            }, [videoUrl]); // 当视频URL变化时重新绑定（URL变化通常意味着重新加载）
+            }, [videoUrl]);
 
-            // 加载预设列表
+            // Load presets
             useEffect(() => {
                 fetch('/api/presets').then(res => res.json()).then(setPresets);
             }, []);
 
-            // 加载选中预设的内容
+            // Load tasks and poll
+            useEffect(() => {
+                const fetchTasks = () => {
+                    fetch('/api/tasks')
+                        .then(res => res.json())
+                        .then(setTasks)
+                        .catch(console.error);
+                };
+                fetchTasks();
+                const timer = setInterval(fetchTasks, 3000);
+                return () => clearInterval(timer);
+            }, []);
+
+            // Load preset config
             useEffect(() => {
                 if (currentPreset) {
                     fetch(`/api/presets/${currentPreset}`)
@@ -95,11 +119,9 @@
                 }
             }, [currentPreset]);
 
-            // 绘图逻辑
-            // React onWheel removed to avoid passive listener issues
-
+            // Draw logic
             const handleMouseDown = (e) => {
-                if (e.button === 1 || (e.button === 0 && e.altKey)) { // Middle click or Alt+Left
+                if (e.button === 1 || (e.button === 0 && e.altKey)) {
                     setIsPanning(true);
                     setLastMouse({ x: e.clientX, y: e.clientY });
                     return;
@@ -129,7 +151,6 @@
                 if (!canvas || !video) return;
                 
                 const rect = canvas.getBoundingClientRect();
-                // 使用视频的实际显示尺寸来映射坐标，确保 1:1 映射到原始分辨率
                 const x = (e.clientX - rect.left) * (canvas.width / rect.width);
                 const y = (e.clientY - rect.top) * (canvas.height / rect.height);
                 
@@ -167,12 +188,9 @@
                 }
             };
 
-            const toggleDrawing = () => setIsDrawing(!isDrawing);
-
             const captureMask = () => {
                 if (!canvasRef.current || !videoRef.current) return;
                 const dataUrl = canvasRef.current.toDataURL();
-                // 默认范围：当前时间到当前时间+5秒
                 setCapturedMasks([...capturedMasks, { 
                     id: Date.now(),
                     time: currentTime, 
@@ -182,7 +200,6 @@
                     originalWidth: videoRef.current.videoWidth,
                     originalHeight: videoRef.current.videoHeight
                 }]);
-                // 清空画布以便绘制下一帧
                 ctxRef.current.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
                 alert(`已捕获遮罩 (${videoRef.current.videoWidth}x${videoRef.current.videoHeight})`);
             };
@@ -200,15 +217,14 @@
                 }
             };
 
-            const startRender = async () => {
+            const submitTask = async () => {
                 if (!videoFile || !currentPreset) {
                     alert("请上传视频并选择一个已保存的预设");
                     return;
                 }
                 
-                setIsRendering(true);
+                setIsSubmitting(true);
                 try {
-                    // 1. 先进行文件上传
                     const ext = videoFile.name.split('.').pop();
                     const uploadRes = await fetch('/api/upload', {
                         method: 'POST',
@@ -217,44 +233,39 @@
                     });
                     const uploadData = await uploadRes.json();
                     
-                    // 2. 触发渲染
-                    const renderRes = await fetch('/api/render-with-preset', {
+                    const renderRes = await fetch('/api/tasks', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             videoUrl: uploadData.localPath, 
-                            presetName: currentPreset,
-                            compositionId: "ApiDrivenVideo",
-                            outputPath: outputPath 
+                            presetName: currentPreset
                         })
                     });
                     
                     const data = await renderRes.json();
                     alert(data.message);
-                    if (data.outputUrl) window.open(data.outputUrl);
+                    
+                    // Trigger task fetch immediately
+                    fetch('/api/tasks').then(res => res.json()).then(setTasks);
                 } catch (err) {
                     console.error(err);
-                    alert("渲染失败，请检查控制台日志");
+                    alert("提交任务失败，请检查控制台日志");
                 } finally {
-                    setIsRendering(false);
+                    setIsSubmitting(false);
                 }
             };
 
             const savePreset = () => {
                 const name = prompt("请输入预设名称:");
                 if (name) {
-                    const config = {
-                        brushSize,
-                        trimRange,
-                        masks: capturedMasks 
-                    };
+                    const config = { brushSize, trimRange, masks: capturedMasks };
                     fetch('/api/presets', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name, config })
                     }).then(() => {
                         alert("预设已保存");
-                        setPresets([...presets, name]);
+                        setPresets(Array.from(new Set([...presets, name])));
                     });
                 }
             };
@@ -269,10 +280,72 @@
                 }
             };
 
+            // Settings & Keys logic
+            const openSettings = () => {
+                fetch('/api/settings').then(res => res.json()).then(data => {
+                    setSettings({ 
+                        maxConcurrency: data.maxConcurrency, 
+                        cleanupIntervalHours: data.cleanupIntervalHours,
+                        cleanupMaxAgeHours: data.cleanupMaxAgeHours || 24
+                    });
+                });
+                fetch('/api/keys').then(res => res.json()).then(setApiKeys);
+                setShowSettings(true);
+            };
+
+            const saveSettings = () => {
+                fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                }).then(res => res.json()).then(data => {
+                    alert(data.message);
+                });
+            };
+
+            const generateKey = () => {
+                if (!newKeyName) return alert("请输入Key名称");
+                fetch('/api/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newKeyName })
+                }).then(res => res.json()).then(data => {
+                    setGeneratedKey(data); // 存储到状态中，不再 alert
+                    setNewKeyName("");
+                    fetch('/api/keys').then(res => res.json()).then(setApiKeys);
+                });
+            };
+
+            const deleteKey = (keyFull) => {
+                if (confirm("确定要删除这个 API Key 吗？")) {
+                    fetch(`/api/keys/${keyFull}`, { method: 'DELETE' })
+                        .then(() => fetch('/api/keys').then(res => res.json()).then(setApiKeys));
+                }
+            };
+
+            const cleanupVideos = () => {
+                if (confirm("确定要清理所有临时视频文件吗？（不包括任务记录）")) {
+                    fetch('/api/cleanup-videos', { method: 'POST' })
+                        .then(res => res.json())
+                        .then(data => alert(data.message));
+                }
+            };
+
+            const clearTasks = () => {
+                if (confirm("确定要清空所有任务记录吗？")) {
+                    fetch('/api/tasks', { method: 'DELETE' })
+                        .then(res => res.json())
+                        .then(() => {
+                            alert("任务记录已清空");
+                            setTasks([]);
+                        });
+                }
+            };
+
             return (
                 <div className="min-h-screen p-6 flex flex-col gap-6">
                     {/* Header */}
-                    <header className="flex justify-between items-center glass p-4 rounded-2xl">
+                    <header className="flex justify-between items-center glass p-4 rounded-2xl shrink-0">
                         <h1 className="text-2xl font-bold flex items-center gap-2 text-blue-400">
                             <span className="material-icons">movie_filter</span>
                             AI 视频大师
@@ -298,12 +371,15 @@
                             <button onClick={savePreset} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm transition font-medium">
                                 保存预设
                             </button>
+                            <button onClick={openSettings} className="bg-slate-700 hover:bg-slate-600 p-2 rounded-full transition flex items-center justify-center ml-2">
+                                <span className="material-icons">settings</span>
+                            </button>
                         </div>
                     </header>
 
-                    <main className="flex-1 flex gap-6 overflow-hidden">
+                    <main className="flex-1 flex gap-6 min-h-0">
                         {/* Left: Video Area */}
-                        <div className="flex-[2] glass rounded-2xl flex flex-col p-4 gap-4 overflow-hidden">
+                        <div className="flex-[2] glass rounded-2xl flex flex-col p-4 gap-4 h-full">
                             {!videoUrl ? (
                                 <div className="flex-1 border-2 border-dashed border-slate-700 rounded-xl flex flex-col items-center justify-center gap-4 hover:border-blue-500 transition-colors cursor-pointer" onClick={() => document.getElementById('videoInput').click()}>
                                     <span className="material-icons text-6xl text-slate-600">cloud_upload</span>
@@ -333,19 +409,15 @@
                                                 setDuration(video.duration);
                                                 setTrimRange([0, video.duration]);
                                                 
-                                                // 强制同步 Canvas 尺寸到视频元数据
                                                 const updateCanvasSize = () => {
                                                     if (canvasRef.current) {
                                                         canvasRef.current.width = video.videoWidth;
                                                         canvasRef.current.height = video.videoHeight;
-                                                        // 同步显示尺寸（CSS）
                                                         canvasRef.current.style.width = video.clientWidth + 'px';
                                                         canvasRef.current.style.height = video.clientHeight + 'px';
-                                                        console.log(`Canvas resized to video intrinsic: ${video.videoWidth}x${video.videoHeight}, display: ${video.clientWidth}x${video.clientHeight}`);
                                                     }
                                                 };
                                                 
-                                                // 多试几次确保 clientWidth 已就绪
                                                 updateCanvasSize();
                                                 setTimeout(updateCanvasSize, 100);
                                                 setTimeout(updateCanvasSize, 500);
@@ -364,7 +436,7 @@
 
                             {/* Timeline Control */}
                             {videoUrl && (
-                                <div className="flex flex-col gap-2">
+                                <div className="flex flex-col gap-2 shrink-0">
                                     <div className="flex justify-between text-xs text-slate-400">
                                         <span>{currentTime.toFixed(1)}s</span>
                                         <span>{duration.toFixed(1)}s</span>
@@ -386,186 +458,421 @@
                             )}
                         </div>
 
-                        {/* Right: Settings Area */}
-                        <div className="flex-1 glass rounded-2xl p-6 flex flex-col gap-8 overflow-y-auto">
-                            <section>
-                                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                                    <span className="material-icons text-blue-400">settings</span>
-                                    模板设置
-                                </h3>
-                                <div className="flex flex-col gap-4">
-                                    <label className="text-sm text-slate-400">渲染模板 (Remotion)</label>
-                                    <select className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm w-full mb-4">
-                                        <option>ApiDrivenVideo</option>
-                                    </select>
-                                    <label className="text-sm text-slate-400">保存路径 (可选, 服务器绝对路径)</label>
-                                    <div className="flex gap-2">
-                                        <input 
-                                            type="text"
-                                            placeholder="例如: D:\output.mp4"
-                                            className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-blue-300"
-                                            value={outputPath}
-                                            onChange={(e) => setOutputPath(e.target.value)}
-                                        />
-                                        <button 
-                                            onClick={selectPath}
-                                            className="bg-slate-700 hover:bg-slate-600 p-2 rounded-lg flex items-center justify-center transition"
-                                            title="浏览并选择保存路径"
-                                        >
-                                            <span className="material-icons text-sm">folder_open</span>
-                                        </button>
-                                    </div>
-                                    <p className="text-[10px] text-slate-500">留空则直接覆盖原始视频文件</p>
-                                </div>
-                            </section>
+                        {/* Right: Settings & Task Panel */}
+                        <div className="flex-[1] flex flex-col h-full min-w-[340px] glass rounded-2xl overflow-hidden shadow-2xl">
+                            {/* Tabs Header */}
+                            <div className="flex border-b border-slate-700 bg-slate-800/80 shrink-0">
+                                <button 
+                                    onClick={() => setActiveTab('editor')}
+                                    className={`flex-1 py-3 text-sm font-medium transition flex items-center justify-center gap-1 ${activeTab === 'editor' ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300 hover:bg-slate-800/50'}`}
+                                >
+                                    <span className="material-icons text-sm">brush</span>设置参数
+                                </button>
+                                <button 
+                                    onClick={() => setActiveTab('tasks')}
+                                    className={`flex-1 py-3 text-sm font-medium transition flex items-center justify-center gap-1 ${activeTab === 'tasks' ? 'text-indigo-400 border-b-2 border-indigo-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300 hover:bg-slate-800/50'}`}
+                                >
+                                    <span className="material-icons text-sm">format_list_bulleted</span>任务历史 ({tasks.length})
+                                </button>
+                                <button 
+                                    onClick={() => setActiveTab('api')}
+                                    className={`flex-1 py-3 text-sm font-medium transition flex items-center justify-center gap-1 ${activeTab === 'api' ? 'text-green-400 border-b-2 border-green-400 bg-slate-800' : 'text-slate-400 hover:text-slate-300 hover:bg-slate-800/50'}`}
+                                >
+                                    <span className="material-icons text-sm">code</span>API示例
+                                </button>
+                            </div>
 
-                            <section>
-                                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                                    <span className="material-icons text-blue-400">brush</span>
-                                    画笔设置
-                                </h3>
-                                <div className="flex flex-col gap-4">
-                                    <div className="flex justify-between text-sm">
-                                        <span>画笔大小: {brushSize}px</span>
-                                    </div>
-                                    <input 
-                                        type="range" 
-                                        min={5} 
-                                        max={100} 
-                                        value={brushSize} 
-                                        onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                                        className="w-full accent-blue-500"
-                                    />
-                                    <div className="flex gap-2">
-                                        <button 
-                                            onClick={() => { 
-                                                if (ctxRef.current && canvasRef.current) {
-                                                    ctxRef.current.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-                                                }
-                                            }}
-                                            className="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2"
-                                        >
-                                            <span className="material-icons text-sm">clear_all</span>
-                                            清除当前涂抹
-                                        </button>
-                                        <button 
-                                            onClick={captureMask}
-                                            className="flex-1 bg-blue-600 hover:bg-blue-500 py-2 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2"
-                                        >
-                                            <span className="material-icons text-sm">save</span>
-                                            应用此帧
-                                        </button>
-                                    </div>
-                                    <div className="text-[10px] text-slate-500 mb-2">
-                                        已重置遮罩: {capturedMasks.length} 个
-                                    </div>
-                                    <div className="flex flex-col gap-2 max-h-40 overflow-y-auto mb-4">
-                                        {capturedMasks.map((mask, idx) => (
-                                            <div key={mask.id} className="text-[10px] flex flex-col gap-2 bg-slate-800 p-2 rounded-lg border border-slate-700">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-bold text-blue-400"># {idx+1}</span>
-                                                    <img 
-                                                        src={mask.dataUrl} 
-                                                        className="w-10 h-10 object-contain bg-black rounded border border-slate-600 cursor-zoom-in hover:border-blue-400 transition" 
-                                                        onClick={() => setPreviewImage(mask.dataUrl)}
-                                                    />
-                                                    <div className="flex flex-col gap-1">
-                                                        <div className="flex items-center gap-1">
-                                                            <input 
-                                                                type="number" step="0.1" className="w-12 bg-slate-900 rounded px-1" 
-                                                                value={mask.startTime} 
-                                                                onChange={e => {
-                                                                    const newMasks = [...capturedMasks];
-                                                                    newMasks[idx].startTime = parseFloat(e.target.value);
-                                                                    setCapturedMasks(newMasks);
-                                                                }}
+                            {/* Tab Content */}
+                            <div className="flex-1 overflow-y-auto p-4 hide-scrollbar bg-slate-900/40">
+                                
+                                {/* 1. Editor Tab */}
+                                <div style={{ display: activeTab === 'editor' ? 'flex' : 'none' }} className="flex-col gap-6">
+                                    <section>
+                                        <h3 className="text-base font-semibold mb-3 flex items-center gap-2">
+                                            <span className="material-icons text-blue-400">brush</span>
+                                            画笔与遮罩
+                                        </h3>
+                                        <div className="flex flex-col gap-3">
+                                            <div className="flex justify-between text-sm text-slate-300">
+                                                <span>大小: {brushSize}px</span>
+                                            </div>
+                                            <input 
+                                                type="range" min={5} max={100} value={brushSize} 
+                                                onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                                                className="w-full accent-blue-500"
+                                            />
+                                            <div className="flex gap-2">
+                                                <button 
+                                                    onClick={() => { 
+                                                        if (ctxRef.current && canvasRef.current) {
+                                                            ctxRef.current.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                                                        }
+                                                    }}
+                                                    className="flex-[1] bg-slate-800 border border-slate-700 hover:bg-slate-700 py-2 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1"
+                                                >
+                                                    <span className="material-icons text-sm">clear_all</span> 清空
+                                                </button>
+                                                <button 
+                                                    onClick={captureMask}
+                                                    className="flex-[2] bg-blue-600 hover:bg-blue-500 py-2 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1"
+                                                >
+                                                    <span className="material-icons text-sm">save</span>
+                                                    保存帧作为遮罩
+                                                </button>
+                                            </div>
+                                            
+                                            {/* 遮罩列表 */}
+                                            <div className="flex flex-col gap-2 max-h-48 overflow-y-auto mt-2 hide-scrollbar">
+                                                {capturedMasks.map((mask, idx) => (
+                                                    <div key={mask.id} className="text-xs flex flex-col gap-2 bg-slate-800 p-2 rounded-lg border border-slate-700">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="font-bold text-blue-400"># {idx+1}</span>
+                                                            <img 
+                                                                src={mask.dataUrl} 
+                                                                className="w-10 h-10 object-contain bg-black rounded border border-slate-600 cursor-zoom-in hover:border-blue-400 transition" 
+                                                                onClick={() => setPreviewImage(mask.dataUrl)}
                                                             />
-                                                            <span>-</span>
-                                                            <input 
-                                                                type="number" step="0.1" className="w-12 bg-slate-900 rounded px-1" 
-                                                                value={mask.endTime} 
-                                                                onChange={e => {
-                                                                    const newMasks = [...capturedMasks];
-                                                                    newMasks[idx].endTime = parseFloat(e.target.value);
-                                                                    setCapturedMasks(newMasks);
-                                                                }}
-                                                            />
+                                                            <div className="flex flex-col gap-1 ml-2">
+                                                                <div className="text-[10px] text-slate-400">生效时间 (秒)</div>
+                                                                <div className="flex items-center gap-1">
+                                                                    <input 
+                                                                        type="number" step="0.1" className="w-14 bg-slate-900 border border-slate-700 rounded px-1 text-center" 
+                                                                        value={mask.startTime} 
+                                                                        onChange={e => {
+                                                                            const newMasks = [...capturedMasks];
+                                                                            newMasks[idx].startTime = parseFloat(e.target.value) || 0;
+                                                                            setCapturedMasks(newMasks);
+                                                                        }}
+                                                                    />
+                                                                    <span className="text-slate-500">-</span>
+                                                                    <input 
+                                                                        type="number" step="0.1" className="w-14 bg-slate-900 border border-slate-700 rounded px-1 text-center" 
+                                                                        value={mask.endTime} 
+                                                                        onChange={e => {
+                                                                            const newMasks = [...capturedMasks];
+                                                                            newMasks[idx].endTime = parseFloat(e.target.value) || 0;
+                                                                            setCapturedMasks(newMasks);
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            <button 
+                                                                onClick={() => setCapturedMasks(capturedMasks.filter(m => m.id !== mask.id))} 
+                                                                className="ml-auto text-red-500 hover:bg-red-500/20 p-1 rounded transition material-icons text-sm"
+                                                            >
+                                                                delete
+                                                            </button>
                                                         </div>
                                                     </div>
-                                                    <button onClick={() => setCapturedMasks(capturedMasks.filter(m => m.id !== mask.id))} className="ml-auto text-red-500 material-icons text-xs">delete</button>
-                                                </div>
+                                                ))}
+                                                {capturedMasks.length === 0 && <span className="text-xs text-slate-500 text-center py-4">暂无保存的遮罩</span>}
                                             </div>
-                                        ))}
+                                        </div>
+                                    </section>
+
+                                    <section className="mt-auto">
+                                        <h3 className="text-base font-semibold mb-3 flex items-center gap-2">
+                                            <span className="material-icons text-blue-400">task_alt</span>
+                                            提交任务
+                                        </h3>
+                                        <div className="flex flex-col gap-3">
+                                            
+                                            <button 
+                                                onClick={() => { submitTask(); setActiveTab('tasks'); }}
+                                                disabled={isSubmitting}
+                                                className={`w-full py-3 rounded-xl font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg mt-1 ${
+                                                    isSubmitting 
+                                                    ? "bg-slate-700 text-slate-400 cursor-not-allowed" 
+                                                    : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white"
+                                                }`}
+                                            >
+                                                <span className={`material-icons text-lg ${isSubmitting ? "animate-spin" : ""}`}>
+                                                    {isSubmitting ? "sync" : "add_task"}
+                                                </span>
+                                                {isSubmitting ? "正在提交..." : "提交处理任务"}
+                                            </button>
+                                        </div>
+                                    </section>
+                                </div>
+
+                                {/* 2. Tasks Tab */}
+                                <div style={{ display: activeTab === 'tasks' ? 'flex' : 'none' }} className="flex-col gap-3">
+                                    {tasks.length === 0 ? (
+                                        <div className="text-center text-slate-500 text-sm py-8">暂无任务记录</div>
+                                    ) : (
+                                        tasks.map(task => {
+                                            const shortId = task.id.split('_').pop();
+                                            
+                                            return (
+                                                <div key={task.id} className={`bg-slate-800/80 p-3 rounded-xl border ${task.videoExpired ? 'border-slate-700/30 opacity-70' : 'border-slate-700/50'} flex gap-3 text-sm transition hover:bg-slate-800`}>
+                                                    {/* 缩略图 (分离生成的图片文件) */}
+                                                    <div className="w-16 h-16 bg-black rounded-lg border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center relative shadow-inner">
+                                                        {task.thumbnailUrl ? (
+                                                            <img src={task.thumbnailUrl} className="w-full h-full object-cover" />
+                                                        ) : (
+                                                            <span className="material-icons text-slate-600">movie</span>
+                                                        )}
+                                                    </div>
+                                                    
+                                                    {/* 详细信息 */}
+                                                    <div className="flex-1 flex flex-col justify-between min-w-0">
+                                                        <div className="flex justify-between items-start">
+                                                            <div className="flex flex-col min-w-0">
+                                                                <span className="font-medium truncate text-blue-100" title={task.videoName}>{task.videoName}</span>
+                                                                <div className="flex items-center gap-2 mt-0.5">
+                                                                    <span className="text-[10px] text-slate-500 font-mono">ID: {shortId}</span>
+                                                                    {task.videoExpired && (
+                                                                        <span className="text-[9px] bg-slate-700/50 text-slate-400 px-1.5 py-0.5 rounded">原文件已清理</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <span className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ml-2 ${
+                                                                task.status === 'completed' ? 'bg-green-500/20 text-green-400 border border-green-500/20' :
+                                                                task.status === 'processing' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/20' :
+                                                                task.status === 'failed' ? 'bg-red-500/20 text-red-400 border border-red-500/20' :
+                                                                'bg-yellow-500/20 text-yellow-400 border border-yellow-500/20'
+                                                            }`}>
+                                                                {task.status === 'completed' ? '完成' : task.status === 'processing' ? '处理中' : task.status === 'failed' ? '失败' : '排队中'}
+                                                            </span>
+                                                        </div>
+                                                        
+                                                        <div className="flex justify-between items-end mt-2">
+                                                            <div className="flex flex-col gap-0.5 text-[10px] text-slate-400">
+                                                                <span>{new Date(task.createdAt).toLocaleString()}</span>
+                                                                {task.duration && <span>耗时: {task.duration}s</span>}
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                {task.status === 'completed' && task.outputUrl && !task.videoExpired && (
+                                                                    <a href={task.outputUrl} target="_blank" className="text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 px-2 py-1.5 rounded transition flex items-center gap-1 shrink-0 border border-blue-500/30">
+                                                                        <span className="material-icons text-[14px]">download</span>下载
+                                                                    </a>
+                                                                )}
+                                                                <button onClick={() => {
+                                                                    if (confirm("确定要删除这条任务记录吗？")) {
+                                                                        fetch('/api/tasks/' + task.id, { method: 'DELETE' }).then(() => {
+                                                                            fetch('/api/tasks').then(res => res.json()).then(setTasks);
+                                                                        });
+                                                                    }
+                                                                }} className="text-red-400/50 hover:text-red-400 bg-red-500/5 hover:bg-red-500/10 p-1.5 rounded transition">
+                                                                    <span className="material-icons text-[14px]">delete</span>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        {task.status === 'failed' && task.error && (
+                                                            <div className="text-red-400 text-[10px] mt-1 line-clamp-2" title={task.error}>{task.error}</div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+
+                                {/* 3. API Tab */}
+                                <div style={{ display: activeTab === 'api' ? 'flex' : 'none' }} className="flex-col gap-5 text-sm text-slate-300">
+                                    <div className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-lg flex items-start gap-2">
+                                        <span className="material-icons text-blue-400 text-base mt-0.5">info</span>
+                                        <div className="text-xs leading-relaxed">
+                                            使用 API 提交任务前，请先在右上角 <span className="material-icons text-[12px] align-middle">settings</span> <b>系统设置</b> 中生成一个 <b>API Key</b>。<br/>
+                                            所有调用均需在请求头携带：<code className="bg-slate-800 px-1 rounded text-blue-300">Authorization: Bearer lc-[你的Key]</code>
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <h4 className="font-semibold text-white mb-2 flex items-center gap-2">
+                                            <span className="bg-green-600/20 text-green-400 px-1.5 py-0.5 rounded text-[10px]">POST</span> 
+                                            提交处理任务
+                                        </h4>
+                                        <pre className="bg-slate-900 border border-slate-700 p-3 rounded-lg text-[11px] font-mono overflow-x-auto text-green-300">
+{`curl -X POST http://localhost:7789/api/tasks \\
+  -H "Authorization: Bearer lc-your-key-here" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "videoUrl": "/temp/upload_123.mp4",
+    "presetName": "my-preset"
+  }'`}
+                                        </pre>
+                                        <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+                                            <b>videoUrl</b>: 视频地址 (服务器绝对路径或 /temp/xxx.mp4)<br/>
+                                            <b>presetName</b>: 网页端保存的预设名称<br/>
+                                            <b>outputPath</b>: (可选) 自定义输出文件绝对路径
+                                        </p>
+                                    </div>
+                                    
+                                    <div>
+                                        <h4 className="font-semibold text-white mb-2 flex items-center gap-2">
+                                            <span className="bg-blue-600/20 text-blue-400 px-1.5 py-0.5 rounded text-[10px]">GET</span> 
+                                            查询任务队列
+                                        </h4>
+                                        <pre className="bg-slate-900 border border-slate-700 p-3 rounded-lg text-[11px] font-mono overflow-x-auto text-blue-300">
+{`curl -X GET http://localhost:7789/api/tasks \\
+  -H "Authorization: Bearer lc-your-key-here"`}
+                                        </pre>
+                                    </div>
+
+                                    <div>
+                                        <h4 className="font-semibold text-white mb-2 flex items-center gap-2">
+                                            <span className="bg-orange-600/20 text-orange-400 px-1.5 py-0.5 rounded text-[10px]">DELETE</span> 
+                                            取消或删除任务
+                                        </h4>
+                                        <pre className="bg-slate-900 border border-slate-700 p-3 rounded-lg text-[11px] font-mono overflow-x-auto text-orange-300">
+{`curl -X DELETE http://localhost:7789/api/tasks/task_123456 \\
+  -H "Authorization: Bearer lc-your-key-here"`}
+                                        </pre>
                                     </div>
                                 </div>
-                            </section>
 
-                            <section>
-                                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                                    <span className="material-icons text-blue-400">content_cut</span>
-                                    时长裁剪 (秒)
-                                </h3>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="text-xs text-slate-400 mb-1 block">开始时间</label>
-                                        <input 
-                                            type="number" 
-                                            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm w-full"
-                                            value={trimRange[0].toFixed(1)}
-                                            onChange={(e) => setTrimRange([parseFloat(e.target.value), trimRange[1]])}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs text-slate-400 mb-1 block">结束时间</label>
-                                        <input 
-                                            type="number" 
-                                            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm w-full"
-                                            value={trimRange[1].toFixed(1)}
-                                            onChange={(e) => setTrimRange([trimRange[0], parseFloat(e.target.value)])}
-                                        />
-                                    </div>
-                                </div>
-                            </section>
-
-                            <div className="mt-auto">
-                                <button 
-                                onClick={startRender}
-                                disabled={isRendering}
-                                className={`w-full py-4 rounded-xl font-bold text-lg transition flex items-center justify-center gap-3 shadow-xl ${
-                                    isRendering 
-                                    ? "bg-slate-700 text-slate-400 cursor-not-allowed" 
-                                    : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-blue-900/40"
-                                }`}
-                            >
-                                <span className={`material-icons ${isRendering ? "animate-spin" : ""}`}>
-                                    {isRendering ? "sync" : "rocket_launch"}
-                                </span>
-                                {isRendering ? "正在处理并渲染中..." : "立刻渲染视频 (生成 MP4)"}
-                            </button>
-                                <p className="text-[10px] text-slate-500 text-center mt-3">
-                                    渲染大约需要 1-3 分钟，完成后将自动下载
-                                </p>
                             </div>
                         </div>
                     </main>
 
+                    {/* Settings Modal */}
+                    {showSettings && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay">
+                            <div className="bg-slate-900 border border-slate-700 rounded-2xl w-[600px] max-h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+                                <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-800/50">
+                                    <h2 className="text-xl font-bold flex items-center gap-2">
+                                        <span className="material-icons">settings</span> 系统设置
+                                    </h2>
+                                    <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white transition">
+                                        <span className="material-icons">close</span>
+                                    </button>
+                                </div>
+                                
+                                <div className="p-6 overflow-y-auto flex flex-col gap-6">
+                                    {/* 性能设置 */}
+                                    <section className="flex flex-col gap-3">
+                                        <h3 className="font-semibold text-blue-400 border-b border-slate-700 pb-1">性能配置 (Concurrency)</h3>
+                                        <div className="flex items-center gap-4">
+                                            <label className="text-sm">IOPaint 并发进程数:</label>
+                                            <input 
+                                                type="number" min="1" max="8" 
+                                                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 w-20"
+                                                value={settings.maxConcurrency}
+                                                onChange={e => setSettings({...settings, maxConcurrency: parseInt(e.target.value)})}
+                                            />
+                                        </div>
+                                        <div className="text-xs text-slate-400 bg-slate-800/50 p-3 rounded">
+                                            <p className="font-bold text-slate-300 mb-1">推荐显存设置：</p>
+                                            <ul className="list-disc pl-4 space-y-1">
+                                                <li>4GB 显存: 建议 1</li>
+                                                <li>6GB 显存 (如1060): 建议 2</li>
+                                                <li>8GB 显存: 建议 2-3</li>
+                                                <li>12GB+ 显存: 建议 3-4</li>
+                                                <li>16GB+ 显存: 建议 4-6</li>
+                                            </ul>
+                                        </div>
+                                    </section>
+
+                                    {/* 清理与维护 */}
+                                    <section className="flex flex-col gap-3">
+                                        <h3 className="font-semibold text-blue-400 border-b border-slate-700 pb-1">清理与维护</h3>
+                                        <div className="flex items-center gap-4">
+                                            <label className="text-sm">视频自动清理周期(小时):</label>
+                                            <input 
+                                                type="number" min="1" max="720" 
+                                                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 w-20"
+                                                value={settings.cleanupIntervalHours}
+                                                onChange={e => setSettings({...settings, cleanupIntervalHours: parseInt(e.target.value), cleanupMaxAgeHours: parseInt(e.target.value)})}
+                                            />
+                                        </div>
+                                        <div className="flex gap-3 mt-2">
+                                            <button onClick={cleanupVideos} className="bg-orange-600/20 hover:bg-orange-600/40 text-orange-400 border border-orange-500/30 px-4 py-2 rounded text-sm transition">
+                                                立即清理过期视频
+                                            </button>
+                                            <button onClick={clearTasks} className="bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 px-4 py-2 rounded text-sm transition">
+                                                清空所有任务记录
+                                            </button>
+                                        </div>
+                                    </section>
+
+                                    {/* API Keys */}
+                                    <section className="flex flex-col gap-3">
+                                        <h3 className="font-semibold text-blue-400 border-b border-slate-700 pb-1">API Keys 授权</h3>
+                                        <div className="flex gap-2">
+                                            <input 
+                                                type="text" placeholder="输入识别名称(如: my-app)"
+                                                className="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm"
+                                                value={newKeyName}
+                                                onChange={e => setNewKeyName(e.target.value)}
+                                            />
+                                            <button onClick={generateKey} className="bg-blue-600 hover:bg-blue-500 px-4 py-1 rounded text-sm">生成新 Key</button>
+                                        </div>
+                                        
+                                        {generatedKey && (
+                                            <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-sm flex flex-col gap-2 relative mt-1">
+                                                <button onClick={() => setGeneratedKey(null)} className="absolute top-2 right-2 text-green-400/50 hover:text-green-300 transition">
+                                                    <span className="material-icons text-sm">close</span>
+                                                </button>
+                                                <div className="text-green-400 font-bold flex items-center gap-1">
+                                                    <span className="material-icons text-sm">check_circle</span>新 Key 已生成！请立即复制（关闭后将无法再次查看）
+                                                </div>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <code className="bg-black/40 border border-green-500/20 px-3 py-2 rounded-lg flex-1 select-all font-mono text-green-300 text-xs break-all">
+                                                        {generatedKey.key}
+                                                    </code>
+                                                    <button 
+                                                        onClick={() => {
+                                                            navigator.clipboard.writeText(generatedKey.key).then(() => {
+                                                                const btn = document.getElementById('copy-btn');
+                                                                const originalText = btn.innerHTML;
+                                                                btn.innerHTML = '<span class="material-icons text-sm">check</span> 已复制';
+                                                                setTimeout(() => btn.innerHTML = originalText, 2000);
+                                                            });
+                                                        }} 
+                                                        id="copy-btn"
+                                                        className="bg-green-600 hover:bg-green-500 px-3 py-2 rounded-lg text-white transition flex items-center gap-1 shrink-0"
+                                                    >
+                                                        <span className="material-icons text-sm">content_copy</span> 复制
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <table className="w-full text-sm text-left text-slate-300 mt-2">
+                                            <thead className="bg-slate-800 text-xs uppercase">
+                                                <tr><th className="px-3 py-2">名称</th><th className="px-3 py-2">Key (脱敏)</th><th className="px-3 py-2 text-right">操作</th></tr>
+                                            </thead>
+                                            <tbody>
+                                                {apiKeys.length === 0 ? (
+                                                    <tr><td colSpan="3" className="px-3 py-4 text-center text-slate-500">无配置的 API Keys (当前为开放访问模式)</td></tr>
+                                                ) : apiKeys.map(k => (
+                                                    <tr key={k.key} className="border-b border-slate-800">
+                                                        <td className="px-3 py-2">{k.name}</td>
+                                                        <td className="px-3 py-2 font-mono">{k.key}</td>
+                                                        <td className="px-3 py-2 text-right">
+                                                            <button onClick={() => deleteKey(k.fullKey)} className="text-red-400 hover:text-red-300 material-icons text-[16px]">delete</button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </section>
+                                </div>
+                                
+                                <div className="p-4 border-t border-slate-800 bg-slate-800/30 flex justify-end gap-3">
+                                    <button onClick={() => setShowSettings(false)} className="px-4 py-2 rounded text-slate-300 hover:bg-slate-700">取消</button>
+                                    <button onClick={() => { saveSettings(); setShowSettings(false); }} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white">保存设置</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Image Preview Modal */}
                     {previewImage && (
                         <div 
-                            className="fixed inset-0 z-50 flex items-center justify-center p-8 bg-black/90 backdrop-blur-sm transition-all"
+                            className="fixed inset-0 z-[60] flex items-center justify-center p-8 modal-overlay"
                             onClick={() => setPreviewImage(null)}
                         >
                             <div className="relative max-w-full max-h-full flex flex-col items-center">
                                 <img 
                                     src={previewImage} 
-                                    className="max-w-[90vw] max-h-[80vh] object-contain rounded-xl shadow-2xl border border-slate-700 bg-slate-900 shadow-blue-500/10" 
+                                    className="max-w-[90vw] max-h-[80vh] object-contain rounded-xl shadow-2xl border border-slate-700 bg-slate-900" 
                                 />
                                 <button 
                                     className="mt-6 bg-white/10 hover:bg-white/20 text-white px-8 py-3 rounded-full flex items-center gap-2 transition backdrop-blur"
-                                    onClick={() => setPreviewImage(null)}
                                 >
-                                    <span className="material-icons">close</span>
-                                    点击任意处关闭
+                                    <span className="material-icons">close</span> 关闭预览
                                 </button>
                             </div>
                         </div>

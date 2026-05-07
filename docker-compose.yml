@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  lama-cleaner:
+    build: .
+    container_name: lama-cleaner-webui
+    restart: unless-stopped
+    ports:
+      - "7789:7789"
+    volumes:
+      - ./data:/app/data               # 挂载应用数据(配置/预设/任务)
+      - model_cache:/app/models        # 挂载模型下载缓存(持久化卷)
+      - ./mengban:/app/mengban         # 挂载处理中的临时蒙版目录
+    environment:
+      - VENV_SCRIPTS_PATH=/app/.venv/bin
+      - IOPAINT_EXE=/app/.venv/bin/iopaint
+      - FFMPEG_EXE=ffmpeg
+      - MODEL_DIR=/app/models
+      - WORK_BASE_DIR=/app/mengban
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  model_cache:
+    name: lama_cleaner_models

@@ -1,0 +1,25 @@
+node_modules
+.venv
+.git
+.github
+.vscode
+.idea
+*.log
+*.mp4
+*.mkv
+*.avi
+*.mov
+# 不忽略 data 目录本身，但是忽略里面的临时文件和日志
+data/temp/*
+data/logs/*
+data/tasks.json
+!data/config.json
+!data/presets/
+
+mengban/
+ffmpeg_binaries/
+models/
+
+# 忽略系统文件
+.DS_Store
+Thumbs.db

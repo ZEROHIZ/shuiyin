@@ -11,14 +11,50 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# --- 配置常量 ---
-VENV_SCRIPTS_PATH = r"D:\daima\Lama_Cleaner\.venv\Scripts"
-IOPAINT_EXE = os.path.join(VENV_SCRIPTS_PATH, "iopaint.exe")
-MODEL_DIR = r"D:\daima\Lama_Cleaner"
-WORK_BASE_DIR = r"D:\daima\Lama_Cleaner\mengban"
+def cv2_imread(path, flags=cv2.IMREAD_COLOR):
+    """支持包含中文等 Unicode 路径的图像读取"""
+    return cv2.imdecode(np.fromfile(path, dtype=np.uint8), flags)
 
-# [新增] FFmpeg 可执行文件的精确路径
-FFMPEG_EXE = r"D:\daima\Lama_Cleaner\ffmpeg_binaries\ffmpeg.exe"
+def cv2_imwrite(path, img):
+    """支持包含中文等 Unicode 路径的图像保存"""
+    ext = os.path.splitext(path)[1]
+    is_success, im_buf_arr = cv2.imencode(ext, img)
+    if is_success:
+        im_buf_arr.tofile(path)
+        return True
+    return False
+
+# --- 配置常量：优先从环境变量读取，未设置则使用默认值 ---
+# 本地开发：保持默认值不变即可使用
+# Docker/其他环境：通过环境变量覆盖
+_DEFAULT_BASE = os.path.dirname(os.path.abspath(__file__))
+
+VENV_SCRIPTS_PATH = os.environ.get(
+    "VENV_SCRIPTS_PATH",
+    os.path.join(_DEFAULT_BASE, ".venv", "Scripts")
+)
+# Linux/Docker 环境下 iopaint 在 bin 目录
+_iopaint_name = "iopaint.exe" if sys.platform == "win32" else "iopaint"
+IOPAINT_EXE = os.environ.get(
+    "IOPAINT_EXE",
+    os.path.join(VENV_SCRIPTS_PATH, _iopaint_name)
+)
+
+MODEL_DIR = os.environ.get(
+    "MODEL_DIR",
+    _DEFAULT_BASE
+)
+
+WORK_BASE_DIR = os.environ.get(
+    "WORK_BASE_DIR",
+    os.path.join(_DEFAULT_BASE, "mengban")
+)
+
+# FFmpeg 可执行文件路径；Docker 环境通常在 PATH 中，直接用 "ffmpeg" 即可
+FFMPEG_EXE = os.environ.get(
+    "FFMPEG_EXE",
+    os.path.join(_DEFAULT_BASE, "ffmpeg_binaries", "ffmpeg.exe")
+)
 
 MASK_FILES = {
     1: os.path.join(WORK_BASE_DIR, "mask1.png"),
@@ -120,14 +156,16 @@ def run_ffmpeg_command(command):
         print(f"执行 FFmpeg 时发生未知错误: {e}", file=sys.stderr)
         return False
 
-def process_single_video(video_path, mask_ranges=None, output_path=None):
+def process_single_video(video_path, mask_ranges=None, output_path=None, max_workers=2):
     """处理单个视频文件的核心逻辑"""
     start_time = time.time()
     print(f"\n{'='*30}")
     print(f"开始处理视频: {os.path.basename(video_path)}")
     print(f"{ '='*30}")
 
-    temp_work_dir = tempfile.mkdtemp(dir=WORK_BASE_DIR, prefix=f"processing_{os.path.basename(video_path)}_" )
+    # 使用时间戳代替可能包含中文的原文件名，避免 cv2 和其他工具在 Windows 上路径解析失败
+    safe_prefix = f"processing_{int(time.time()*1000)}_"
+    temp_work_dir = tempfile.mkdtemp(dir=WORK_BASE_DIR, prefix=safe_prefix)
     print(f"创建临时工作目录: {temp_work_dir}")
 
     try:
@@ -182,7 +220,7 @@ def process_single_video(video_path, mask_ranges=None, output_path=None):
                 os.makedirs(group_dirs[target_group], exist_ok=True)
 
             frame_filename = os.path.join(group_dirs[target_group], f"frame_{frame_count:05d}.png")
-            cv2.imwrite(frame_filename, frame)
+            cv2_imwrite(frame_filename, frame)
             
             if frame_count % 100 == 0:
                 print(f"[{video_name}] [进度] 正在提取帧: {frame_count}/{total_frames}...", flush=True)
@@ -190,9 +228,9 @@ def process_single_video(video_path, mask_ranges=None, output_path=None):
         cap.release()
         print(f"帧提取和分组完成，共 {frame_count} 帧。", flush=True)
 
-        print("\n--- 开始并发处理蒙版组 (最多2个进程) ---", flush=True)
+        print(f"\n--- 开始并发处理蒙版组 (最多 {max_workers} 个进程) ---", flush=True)
         tasks = []
-        with ProcessPoolExecutor(max_workers=2) as executor:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             for group_num, group_dir in group_dirs.items():
                 if not os.listdir(group_dir):
                     continue
@@ -204,7 +242,7 @@ def process_single_video(video_path, mask_ranges=None, output_path=None):
                     continue
 
                 # [修改] 支持透明背景遮罩：提取 Alpha 通道作为重绘区域
-                mask_rgba = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+                mask_rgba = cv2_imread(mask_path, cv2.IMREAD_UNCHANGED)
                 if mask_rgba is not None:
                     if len(mask_rgba.shape) == 3 and mask_rgba.shape[2] == 4:
                         # 如果是 RGBA，将 Alpha 通道取出
@@ -233,7 +271,7 @@ def process_single_video(video_path, mask_ranges=None, output_path=None):
                     mask_img[mask_img < 128] = 0
                     
                     # 保存为标准单通道灰度图
-                    cv2.imwrite(mask_path, mask_img)
+                    cv2_imwrite(mask_path, mask_img)
 
                 # 创建 iopaint 配置文件以设置高质量策略
                 config_path = os.path.join(group_dir, "iopaint_config.json")
@@ -274,7 +312,7 @@ def process_single_video(video_path, mask_ranges=None, output_path=None):
         out = cv2.VideoWriter(silent_video_path, fourcc, fps, (frame_width, frame_height))
 
         for frame_path in processed_frames:
-            frame = cv2.imread(frame_path)
+            frame = cv2_imread(frame_path)
             out.write(frame)
         out.release()
         print(f"无声视频合成完毕: {silent_video_path}", flush=True)
@@ -346,10 +384,20 @@ def process_single_video(video_path, mask_ranges=None, output_path=None):
 
 def main():
     """主函数，解析参数并启动处理流程"""
-    if not os.path.exists(FFMPEG_EXE):
-        print(f"[致命错误] 启动检查失败: 未在指定路径找到 'ffmpeg.exe'。", file=sys.stderr)
-        print(f"期望路径: {FFMPEG_EXE}", file=sys.stderr)
+    global FFMPEG_EXE
+    
+    # FFmpeg 检查：先检查配置路径，再检查系统 PATH
+    import shutil as _shutil
+    ffmpeg_in_path = _shutil.which("ffmpeg")
+    if not os.path.exists(FFMPEG_EXE) and not ffmpeg_in_path:
+        print(f"[致命错误] 启动检查失败: 未找到 ffmpeg。", file=sys.stderr)
+        print(f"  配置路径: {FFMPEG_EXE}", file=sys.stderr)
+        print(f"  请设置环境变量 FFMPEG_EXE 或确保 ffmpeg 在系统 PATH 中。", file=sys.stderr)
         sys.exit(1)
+    # 如果指定路径不存在但系统PATH有，则使用系统PATH的ffmpeg
+    if not os.path.exists(FFMPEG_EXE) and ffmpeg_in_path:
+        FFMPEG_EXE = "ffmpeg"
+        print(f"[信息] 使用系统 PATH 中的 ffmpeg: {ffmpeg_in_path}")
 
     parser = argparse.ArgumentParser(description="批量处理视频目录，应用蒙版并覆盖原文件。" )
     parser.add_argument(
@@ -371,6 +419,12 @@ def main():
     parser.add_argument(
         "--output",
         help="[可选] 指定最终生成视频的保存路径（包含文件名）。如果不指定，将覆盖原文件。"
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=2,
+        help="[可选] iopaint 并发处理进程数，默认为 2。"
     )
     args = parser.parse_args()
 
@@ -417,7 +471,7 @@ def main():
     
     all_success = True
     for video_path in video_files:
-        if not process_single_video(video_path, mask_ranges, args.output):
+        if not process_single_video(video_path, mask_ranges, args.output, max_workers=args.concurrency):
             all_success = False
     
     if all_success:
