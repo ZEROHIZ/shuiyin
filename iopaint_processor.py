@@ -29,12 +29,16 @@ def cv2_imwrite(path, img):
 # Docker/其他环境：通过环境变量覆盖
 _DEFAULT_BASE = os.path.dirname(os.path.abspath(__file__))
 
+# 自动检测虚拟环境脚本目录（Windows 是 Scripts, Linux 是 bin）
+_is_win = sys.platform == "win32"
+_venv_sub = "Scripts" if _is_win else "bin"
+_iopaint_name = "iopaint.exe" if _is_win else "iopaint"
+
 VENV_SCRIPTS_PATH = os.environ.get(
     "VENV_SCRIPTS_PATH",
-    os.path.join(_DEFAULT_BASE, ".venv", "Scripts")
+    os.path.join(_DEFAULT_BASE, ".venv", _venv_sub)
 )
-# Linux/Docker 环境下 iopaint 在 bin 目录
-_iopaint_name = "iopaint.exe" if sys.platform == "win32" else "iopaint"
+
 IOPAINT_EXE = os.environ.get(
     "IOPAINT_EXE",
     os.path.join(VENV_SCRIPTS_PATH, _iopaint_name)
