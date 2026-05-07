@@ -43,6 +43,17 @@ const isTempCleanupCandidate = (fileName) => {
   return TEMP_FILE_PREFIXES.some((prefix) => fileName.startsWith(prefix));
 };
 
+const resolveTempFilePathFromUrl = (url = '') => {
+  if (!url) return '';
+  if (url.startsWith('/temp/')) {
+    return join(TEMP_DIR, basename(url));
+  }
+  if (url.startsWith(TEMP_DIR)) {
+    return url;
+  }
+  return '';
+};
+
 // --- 路径和常量 ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -184,7 +195,9 @@ const createTask = async (videoName, presetName, videoPath) => {
     duration: null,
     outputUrl: null,
     error: null,
-    thumbnailUrl: `/temp/thumb_${id}.jpg`
+    thumbnailUrl: `/temp/thumb_${id}.jpg`,
+    sourceExpired: false,
+    outputExpired: false
   };
   
   // 生成缩略图
@@ -560,9 +573,12 @@ app.get("/api/tasks", async (req, res) => {
   // 按创建时间倒序
   const list = [...tasks.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map(t => {
       const cloned = { ...t };
-      if (t.videoPath && !existsSync(t.videoPath)) {
-          cloned.videoExpired = true;
-      }
+      const sourceExpired = Boolean(t.videoPath && !existsSync(t.videoPath));
+      const outputPath = resolveTempFilePathFromUrl(t.outputUrl);
+      const outputExpired = Boolean(t.status === 'completed' && (!outputPath || !existsSync(outputPath)));
+      cloned.sourceExpired = sourceExpired;
+      cloned.outputExpired = outputExpired;
+      cloned.videoExpired = outputExpired;
       return cloned;
   });
   res.json(list);
@@ -573,9 +589,12 @@ app.get("/api/tasks/:id", async (req, res) => {
   const task = tasks.get(req.params.id);
   if (!task) return res.status(404).json({ message: "任务不存在" });
   const cloned = { ...task };
-  if (task.videoPath && !existsSync(task.videoPath)) {
-      cloned.videoExpired = true;
-  }
+  const sourceExpired = Boolean(task.videoPath && !existsSync(task.videoPath));
+  const outputPath = resolveTempFilePathFromUrl(task.outputUrl);
+  const outputExpired = Boolean(task.status === 'completed' && (!outputPath || !existsSync(outputPath)));
+  cloned.sourceExpired = sourceExpired;
+  cloned.outputExpired = outputExpired;
+  cloned.videoExpired = outputExpired;
   res.json(cloned);
 });
 

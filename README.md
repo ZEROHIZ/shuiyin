@@ -1,4 +1,4 @@
-# AI 视频大师 (Lama Cleaner WebUI) v2.0.2
+# AI 视频大师 (Lama Cleaner WebUI) v2.0.3
 
 基于 [IOPaint (原 Lama Cleaner)](https://github.com/Sanster/IOPaint) 的视频 AI 逐帧修复工具。支持多并发、API Key 认证、异步任务队列和自动化管理。
 
