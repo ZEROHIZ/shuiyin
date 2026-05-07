@@ -170,7 +170,7 @@ const saveTasks = async () => {
 
 await loadTasks();
 
-const createTask = (videoName, presetName, videoPath) => {
+const createTask = async (videoName, presetName, videoPath) => {
   const id = `task_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   const task = {
     id,
@@ -195,9 +195,14 @@ const createTask = (videoName, presetName, videoPath) => {
   });
   
   tasks.set(id, task);
-  saveTasks();
+  await saveTasks();
   processQueue(); // 尝试执行队列
   return task;
+};
+
+const ensureTasksLoaded = async () => {
+  if (tasks.size > 0) return;
+  await loadTasks();
 };
 
 // 检查是否为远程 URL
@@ -550,7 +555,8 @@ app.post("/api/upload", express.raw({ type: 'video/*', limit: '500mb' }), async 
 
 
 // --- 任务管理接口 ---
-app.get("/api/tasks", (req, res) => {
+app.get("/api/tasks", async (req, res) => {
+  await ensureTasksLoaded();
   // 按创建时间倒序
   const list = [...tasks.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map(t => {
       const cloned = { ...t };
@@ -562,7 +568,8 @@ app.get("/api/tasks", (req, res) => {
   res.json(list);
 });
 
-app.get("/api/tasks/:id", (req, res) => {
+app.get("/api/tasks/:id", async (req, res) => {
+  await ensureTasksLoaded();
   const task = tasks.get(req.params.id);
   if (!task) return res.status(404).json({ message: "任务不存在" });
   const cloned = { ...task };
@@ -634,7 +641,7 @@ app.post("/api/tasks", upload.single('video'), async (req, res) => {
 
     if (!videoPath) return res.status(400).json({ message: "缺少视频文件或路径" });
 
-    const task = createTask(videoName, presetName, videoPath);
+    const task = await createTask(videoName, presetName, videoPath);
     if (isDownloaded) task.isDownloaded = true; 
 
     await log('INFO', `新任务已入队: ${task.id} (${videoName}), 临时文件: ${isDownloaded}`);
@@ -654,7 +661,7 @@ app.post("/render", async (req, res) => {
 
     // 下载视频
     const { localPath, fileName } = await download(videos[0], TEMP_DIR, 'video');
-    const task = createTask(fileName, '', localPath);
+    const task = await createTask(fileName, '', localPath);
     task.isDownloaded = true; // 标记为临时文件以清理
     res.json({ message: "任务已加入队列", taskId: task.id, task });
   } catch (err) {
@@ -679,7 +686,7 @@ app.post("/api/render-with-preset", async (req, res) => {
         isDownloaded = true;
     }
 
-    const task = createTask(videoName, presetName, videoPath);
+    const task = await createTask(videoName, presetName, videoPath);
     if (isDownloaded) task.isDownloaded = true;
 
     res.json({ message: "任务已加入队列", taskId: task.id, task });
