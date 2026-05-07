@@ -132,8 +132,9 @@ const createTask = (videoName, presetName, videoPath) => {
   };
   
   // 生成缩略图
+  const ffmpegExe = process.env.FFMPEG_EXE || 'ffmpeg';
   const thumbAbsPath = join(TEMP_DIR, `thumb_${id}.jpg`);
-  exec(`ffmpeg -i "${videoPath}" -vframes 1 -q:v 2 -y "${thumbAbsPath}"`, (err) => {
+  exec(`"${ffmpegExe}" -i "${videoPath}" -vframes 1 -q:v 2 -y "${thumbAbsPath}"`, (err) => {
       if (err) console.error(`[Thumbnail] 生成缩略图失败 ${id}:`, err.message);
   });
   
