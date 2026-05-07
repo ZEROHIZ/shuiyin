@@ -21,7 +21,7 @@
 
 1. **一键启动 (推荐)**
    ```bash
-   docker run -d --name shuiyin --gpus all -p 7789:7789 -v ${PWD}/data:/app/data ghcr.io/zerohiz/shuiyin:main
+   docker run -d --name shuiyin --gpus all -p 7789:7789 -v ${PWD}/data:/app/data ghcr.io/zerohiz/shuiyin:1.0
    ```
    *注意：请确保已安装 NVIDIA Container Toolkit 以支持 GPU 加速。*
 
