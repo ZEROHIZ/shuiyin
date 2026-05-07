@@ -10,6 +10,7 @@ import fetch from 'node-fetch';
 import cron from 'node-cron';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import crypto from 'crypto';
+import multer from 'multer';
 
 // --- 路径和常量 ---
 const __filename = fileURLToPath(import.meta.url);
@@ -37,6 +38,18 @@ const ensureDirs = async () => {
   }
 };
 await ensureDirs();
+
+// === Multer 配置 (用于直接上传视频) ===
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, TEMP_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = file.originalname.split('.').pop() || 'mp4';
+    cb(null, `upload_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`);
+  }
+});
+const upload = multer({ storage: storage, limits: { fileSize: 500 * 1024 * 1024 } }); // 限制 500MB
 
 // === 日志系统 ===
 const log = async (level, message) => {
@@ -181,14 +194,32 @@ const processQueue = async () => {
   } finally {
     runningCount--;
     
-    // 如果该任务是下载的临时文件，处理完后自动清理原文件
-    if (nextTask.isDownloaded && nextTask.videoPath && existsSync(nextTask.videoPath)) {
-        try {
-            unlinkSync(nextTask.videoPath);
-            await log('INFO', `清理下载的临时视频文件: ${nextTask.videoPath}`);
-        } catch (e) {
-            await log('ERROR', `清理临时文件失败: ${e.message}`);
+    // 清理任务相关的临时文件
+    if (nextTask.videoPath && existsSync(nextTask.videoPath)) {
+        // 如果该任务是下载或上传的临时文件，处理完后自动清理
+        if (nextTask.isDownloaded) {
+            try {
+                unlinkSync(nextTask.videoPath);
+                await log('INFO', `[Cleanup] 已清理临时视频文件: ${nextTask.videoPath}`);
+            } catch (e) {
+                await log('ERROR', `[Cleanup] 清理视频文件失败: ${e.message}`);
+            }
         }
+    }
+
+    // 无论是否标记为下载，只要是该任务生成的蒙版文件，全部清理
+    try {
+        const files = await readdir(TEMP_DIR);
+        const maskPrefix = `mask_${nextTask.id}_`;
+        for (const file of files) {
+            if (file.startsWith(maskPrefix)) {
+                const maskPath = join(TEMP_DIR, file);
+                await unlink(maskPath);
+                await log('INFO', `[Cleanup] 已清理任务蒙版文件: ${file}`);
+            }
+        }
+    } catch (e) {
+        await log('ERROR', `[Cleanup] 清理蒙版文件失败: ${e.message}`);
     }
 
     await saveTasks();
@@ -521,29 +552,44 @@ app.delete("/api/tasks", async (req, res) => {
   res.json({ message: "所有任务记录已清空" });
 });
 
-// --- 提交新任务（异步） ---
-app.post("/api/tasks", async (req, res) => {
+// --- 提交新任务（异步，支持直接上传或 URL） ---
+app.post("/api/tasks", upload.single('video'), async (req, res) => {
   try {
-    const { videoUrl, videoLocalPath, presetName } = req.body;
+    let { videoUrl, videoLocalPath, presetName } = req.body;
     let videoPath = videoLocalPath || videoUrl;
-    if (!videoPath) return res.status(400).json({ message: "缺少视频路径" });
-    
     let isDownloaded = false;
-    let videoName = basename(videoPath);
+    let videoName = "";
 
-    // 如果是远程 URL，则先下载到临时目录
-    if (isRemoteUrl(videoPath)) {
+    // 1. 优先处理直接上传的文件
+    if (req.file) {
+        videoPath = req.file.path;
+        videoName = req.file.originalname;
+        isDownloaded = true;
+        await log('INFO', `检测到直接上传文件: ${videoName} -> ${videoPath}`);
+    } 
+    // 2. 处理远程 URL
+    else if (videoPath && isRemoteUrl(videoPath)) {
         await log('INFO', `检测到远程 URL，开始下载: ${videoPath}`);
         const downloadResult = await download(videoPath, TEMP_DIR, 'api_down');
         videoPath = downloadResult.localPath;
         videoName = downloadResult.fileName;
         isDownloaded = true;
+    } 
+    // 3. 处理本地路径
+    else if (videoPath) {
+        videoName = basename(videoPath);
+        // 如果本地路径已经在 TEMP_DIR 中（可能是之前上传的），也标记为临时文件以便清理
+        if (videoPath.includes(TEMP_DIR) || videoPath.includes('data/temp') || videoPath.includes('data\\temp')) {
+            isDownloaded = true;
+        }
     }
 
-    const task = createTask(videoName, presetName, videoPath);
-    if (isDownloaded) task.isDownloaded = true; // 标记为已下载，方便后续自动清理
+    if (!videoPath) return res.status(400).json({ message: "缺少视频文件或路径" });
 
-    await log('INFO', `新任务已入队: ${task.id} (${videoName})`);
+    const task = createTask(videoName, presetName, videoPath);
+    if (isDownloaded) task.isDownloaded = true; 
+
+    await log('INFO', `新任务已入队: ${task.id} (${videoName}), 临时文件: ${isDownloaded}`);
     res.json({ message: "任务已加入队列", taskId: task.id, task });
   } catch (err) {
     res.status(500).json({ message: "提交任务失败", error: err.message });
@@ -561,6 +607,7 @@ app.post("/render", async (req, res) => {
     // 下载视频
     const { localPath, fileName } = await download(videos[0], TEMP_DIR, 'video');
     const task = createTask(fileName, '', localPath);
+    task.isDownloaded = true; // 标记为临时文件以清理
     res.json({ message: "任务已加入队列", taskId: task.id, task });
   } catch (err) {
     res.status(500).json({ message: "提交渲染任务失败", error: err.message });
@@ -572,8 +619,21 @@ app.post("/api/render-with-preset", async (req, res) => {
   try {
     const { videoUrl, presetName } = req.body;
     if (!videoUrl) return res.status(400).json({ message: "缺少 videoUrl" });
-    const videoName = basename(videoUrl);
-    const task = createTask(videoName, presetName, videoUrl);
+    
+    let videoPath = videoUrl;
+    let videoName = basename(videoUrl);
+    let isDownloaded = false;
+
+    if (isRemoteUrl(videoUrl)) {
+        const downloadResult = await download(videoUrl, TEMP_DIR, 'preset_down');
+        videoPath = downloadResult.localPath;
+        videoName = downloadResult.fileName;
+        isDownloaded = true;
+    }
+
+    const task = createTask(videoName, presetName, videoPath);
+    if (isDownloaded) task.isDownloaded = true;
+
     res.json({ message: "任务已加入队列", taskId: task.id, task });
   } catch (err) {
     res.status(500).json({ message: "提交任务失败", error: err.message });

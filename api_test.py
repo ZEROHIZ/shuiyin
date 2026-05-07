@@ -29,6 +29,7 @@ def test_api():
         data = response.json()
         task_id = data.get("taskId")
         print(f"[{time.strftime('%X')}] ✅ 任务提交成功！Task ID: {task_id}")
+        return task_id
     except Exception as e:
         print(f"[{time.strftime('%X')}] ❌ 任务提交失败: {e}")
         if 'response' in locals():
@@ -36,9 +37,37 @@ def test_api():
                 print(f"服务器返回信息: {response.json()}")
             except:
                 print(f"服务器返回信息: {response.text}")
-        return
+        return None
 
-    # 2. 轮询任务状态
+def test_upload_api(file_path):
+    print(f"[{time.strftime('%X')}] 正在通过上传模式向 {API_URL} 提交任务: {file_path}")
+    
+    headers = {
+        "Authorization": f"Bearer {API_KEY}"
+        # 注意：使用 requests 上传文件时，不要手动设置 Content-Type，它会自动设置为 multipart/form-data 并带上 boundary
+    }
+    
+    data = {
+        "presetName": PRESET_NAME
+    }
+    
+    try:
+        with open(file_path, 'rb') as f:
+            files = {'video': f}
+            response = requests.post(f"{API_URL}/api/tasks", headers=headers, data=data, files=files)
+        
+        response.raise_for_status()
+        res_data = response.json()
+        task_id = res_data.get("taskId")
+        print(f"[{time.strftime('%X')}] ✅ 文件上传并提交成功！Task ID: {task_id}")
+        return task_id
+    except Exception as e:
+        print(f"[{time.strftime('%X')}] ❌ 上传失败: {e}")
+        return None
+
+def poll_task(task_id):
+    if not task_id: return
+    headers = {"Authorization": f"Bearer {API_KEY}"}
     print(f"\n[{time.strftime('%X')}] ⏳ 开始轮询任务状态...")
     while True:
         try:
@@ -59,12 +88,19 @@ def test_api():
             elif status == "failed":
                 print(f"\n[{time.strftime('%X')}] ❌ 任务失败: {task_info.get('error')}")
                 break
+            
+            time.sleep(3) # 每隔3秒查询一次状态
                 
         except Exception as e:
             print(f"[{time.strftime('%X')}] ❌ 获取任务状态失败: {e}")
             break
-            
-        time.sleep(3) # 每隔3秒查询一次状态
 
 if __name__ == "__main__":
-    test_api()
+    # 模式 1: URL 模式
+    # tid = test_api()
+    # poll_task(tid)
+    
+    # 模式 2: 上传模式 (请确保本地有一个有效的视频文件路径用于测试)
+    LOCAL_FILE = "d:\\daima\\Lama_Cleaner\\ceshi\\test.mp4" # 替换为实际存在的本地路径
+    tid = test_upload_api(LOCAL_FILE)
+    poll_task(tid)

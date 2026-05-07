@@ -45,3 +45,11 @@
 - **Issue**: Rendering failed with "could not determine executable to run" because of missing Remotion dependencies and composition.
 - **Cause**: The project attempted to use `npx remotion` for a composition that wasn't defined, and the Python processing script did not actually overwrite the original file, causing even the fallback to return unprocessed or missing files.
 - **Solution**: Removed the unnecessary Remotion dependency since functionality exists in Python/FFmpeg. Updated `iopaint_processor.py` to correctly overwrite the input file using `shutil.copy2` after successful synthesis. Simplified `server.js` to return the processed file path directly.
+
+## 11. 跨机器 API 素材流转与自动清理 (LAN)
+- **问题**: 在局域网部署中，客户端（A电脑）提供本地路径给服务端（B电脑）会因为 B 无法访问 A 的磁盘而失败。
+- **原因**: 原逻辑中本地路径直接传递给 Python 处理，且只有通过 URL 下载的文件才会自动清理，导致手动上传的素材堆积。
+- **方案**: 
+    1. 为 `/api/tasks` 增加 `multipart/form-data` 支持（集成 `multer`），允许 A 电脑在提交任务时直接上传视频文件。
+    2. 统一清理逻辑：无论是下载的 URL 还是直接上传的视频，以及处理过程中生成的 `mask_*.png` 蒙版文件，都在任务完成（或失败）后立即从 `data/temp` 中物理删除。
+    3. 优化 `processQueue` 的 `finally` 块，实现真正意义上的“即用即弃”素材流控。

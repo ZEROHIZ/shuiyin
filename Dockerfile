@@ -5,6 +5,8 @@ FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV NODE_ENV=production
+LABEL version="2.0.0"
+LABEL description="Video processing WebUI with AI inpainting"
 
 # 替换 apt 源为阿里云以加速（可选）
 RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \

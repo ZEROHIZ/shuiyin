@@ -1,4 +1,4 @@
-# AI 视频大师 (Lama Cleaner WebUI)
+# AI 视频大师 (Lama Cleaner WebUI) v2.0.0
 
 基于 [IOPaint (原 Lama Cleaner)](https://github.com/Sanster/IOPaint) 的视频 AI 逐帧修复工具。支持多并发、API Key 认证、异步任务队列和自动化管理。
 
@@ -21,7 +21,7 @@
 
 1. **一键启动 (推荐)**
    ```bash
-   docker run -d --name shuiyin --gpus all -p 7789:7789 -v ${PWD}/data:/app/data ghcr.io/zerohiz/shuiyin:1.0
+   docker run -d --name shuiyin --gpus all -p 7789:7789 -e MODEL_DIR=/app/data/models -v ${PWD}/data:/app/data ghcr.io/zerohiz/shuiyin:1.0
    ```
    *注意：请确保已安装 NVIDIA Container Toolkit 以支持 GPU 加速。*
 
@@ -83,16 +83,27 @@ Authorization: Bearer lc-your-api-key-here
 
 ### 1. 提交处理任务 (POST)
 
-```http
-POST /api/tasks
-Content-Type: application/json
-Authorization: Bearer lc-[你的Key]
+**方式 A：直接上传文件 (推荐)**
+- **接口**: `/api/tasks`
+- **Content-Type**: `multipart/form-data`
+- **参数**:
+    - `video`: 文件字段 (必填)
+    - `presetName`: 预设名称 (选填)
 
+**方式 B：通过 URL 或服务器本地路径**
+- **接口**: `/api/tasks`
+- **Content-Type**: `application/json`
+- **参数**:
+```json
 {
-    "videoUrl": "D:/test.mp4",     // 服务器本地绝对路径 或 /temp/xxx.mp4
-    "presetName": "my-preset"      // 网页端保存的遮罩预设名称 (无需.json后缀)
+    "videoUrl": "http://xxx/test.mp4", // 远程 URL
+    "videoLocalPath": "D:/test.mp4",   // 或服务器本地绝对路径
+    "presetName": "my-preset"
 }
 ```
+
+> [!TIP]
+> 无论哪种方式，所有下载的远程文件或直接上传的副本都会在任务处理完成后 **自动清理**，不占用服务器空间。
 
 **响应示例**：
 ```json
