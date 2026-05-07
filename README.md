@@ -19,8 +19,13 @@
 - 需安装 [Docker](https://docs.docker.com/engine/install/)
 - 需安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) (GPU 支持)
 
-1. **克隆项目并进入目录**
-2. **启动服务**
+1. **一键启动 (推荐)**
+   ```bash
+   docker run -d --name shuiyin --gpus all -p 7789:7789 -v ${PWD}/data:/app/data ghcr.io/zerohiz/shuiyin:main
+   ```
+   *注意：请确保已安装 NVIDIA Container Toolkit 以支持 GPU 加速。*
+
+2. **使用 Docker Compose (可选)**
    ```bash
    docker-compose up -d
    ```
