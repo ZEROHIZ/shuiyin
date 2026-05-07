@@ -208,7 +208,12 @@ const executeTask = async (task) => {
 // === Python 调用 ===
 const processVideoWithPython = (videoPath, maskPaths = [], maskRanges = "", task = null) => {
   return new Promise((resolve, reject) => {
-    const pythonExePath = process.env.PYTHON_EXE || join(__dirname, '.venv', 'Scripts', 'python.exe');
+    const isWindows = process.platform === 'win32';
+    const defaultPythonPath = isWindows 
+        ? join(__dirname, '.venv', 'Scripts', 'python.exe')
+        : join(__dirname, '.venv', 'bin', 'python');
+
+    const pythonExePath = process.env.PYTHON_EXE || defaultPythonPath;
     const pythonScriptPath = process.env.PYTHON_SCRIPT || join(__dirname, 'iopaint_processor.py');
 
     // 强制输出路径：默认放入 temp 临时目录中，方便提供 HTTP 下载
