@@ -1,6 +1,6 @@
 {
   "name": "lama-cleaner-webui",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Video processing WebUI with AI inpainting",
   "type": "module",
   "main": "server.js",
