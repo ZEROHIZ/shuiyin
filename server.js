@@ -48,6 +48,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = express();
 app.use(express.json());
+let appVersion = 'dev';
 
 // === 数据目录结构 ===
 const DATA_DIR = resolve(__dirname, "data");
@@ -69,6 +70,17 @@ const ensureDirs = async () => {
   }
 };
 await ensureDirs();
+
+const loadAppVersion = async () => {
+  try {
+    const pkgPath = join(__dirname, 'package.json');
+    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
+    appVersion = pkg.version || appVersion;
+  } catch (err) {
+    console.error('[Init] 无法读取 package.json 版本号:', err);
+  }
+};
+await loadAppVersion();
 
 // === Multer 配置 (用于直接上传视频) ===
 const storage = multer.diskStorage({
@@ -416,6 +428,10 @@ app.get("/api/settings", (req, res) => {
     cleanupMaxAgeHours: config.cleanupMaxAgeHours,
     hasApiKeys: config.apiKeys.length > 0
   });
+});
+
+app.get("/api/version", (req, res) => {
+  res.json({ version: appVersion });
 });
 
 app.put("/api/settings", async (req, res) => {

@@ -50,6 +50,7 @@
             const [generatedKey, setGeneratedKey] = useState(null); // 新增状态用于展示刚生成的 key
             const [activeTab, setActiveTab] = useState('editor'); // 新增 Tab 状态
 
+            const [appVersion, setAppVersion] = useState('');
             const videoRef = useRef(null);
             const canvasRef = useRef(null);
             const ctxRef = useRef(null);
@@ -88,6 +89,13 @@
             // Load presets
             useEffect(() => {
                 fetch('/api/presets').then(res => res.json()).then(setPresets);
+            }, []);
+
+            useEffect(() => {
+                fetch('/api/version')
+                    .then(res => res.json())
+                    .then(data => setAppVersion(data.version || ''))
+                    .catch(() => setAppVersion(''));
             }, []);
 
             // Load tasks and poll
@@ -354,7 +362,9 @@
                         <h1 className="text-2xl font-bold flex items-center gap-2 text-blue-400">
                             <span className="material-icons">movie_filter</span>
                             AI 视频大师
-                            <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded ml-1 border border-blue-500/20">v1.1</span>
+                            {appVersion && (
+                                <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded ml-1 border border-blue-500/20">v{appVersion}</span>
+                            )}
                         </h1>
                         <div className="flex gap-4 items-center">
                             {videoUrl && (
