@@ -228,7 +228,11 @@
                     const ext = videoFile.name.split('.').pop();
                     const uploadRes = await fetch('/api/upload', {
                         method: 'POST',
-                        headers: { 'x-file-ext': ext, 'Content-Type': 'video/mp4' },
+                        headers: {
+                            'x-file-ext': ext,
+                            'x-file-name': encodeURIComponent(videoFile.name),
+                            'Content-Type': 'video/mp4'
+                        },
                         body: videoFile
                     });
                     const uploadData = await uploadRes.json();
@@ -238,6 +242,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             videoUrl: uploadData.localPath, 
+                            videoName: uploadData.originalName || videoFile.name,
                             presetName: currentPreset
                         })
                     });

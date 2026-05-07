@@ -12,6 +12,37 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import crypto from 'crypto';
 import multer from 'multer';
 
+const normalizeIncomingFilename = (name = '') => {
+  if (!name) return '';
+
+  // Multipart 上传里的中文文件名在部分客户端/中间件组合下会以 latin1 进入 Node，
+  // 这里仅在字符串仍是单字节内容时尝试还原为 UTF-8，避免把已正常解码的中文再破坏一次。
+  if ([...name].some((char) => char.charCodeAt(0) > 255)) {
+    return name;
+  }
+
+  try {
+    return Buffer.from(name, 'latin1').toString('utf8');
+  } catch (_) {
+    return name;
+  }
+};
+
+const decodeHeaderFilename = (value = '') => {
+  if (!value) return '';
+  try {
+    return normalizeIncomingFilename(decodeURIComponent(value));
+  } catch (_) {
+    return normalizeIncomingFilename(value);
+  }
+};
+
+const TEMP_FILE_PREFIXES = ['upload_', 'api_down_', 'video_', 'preset_down_', 'mask_'];
+
+const isTempCleanupCandidate = (fileName) => {
+  return TEMP_FILE_PREFIXES.some((prefix) => fileName.startsWith(prefix));
+};
+
 // --- 路径和常量 ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -197,7 +228,7 @@ const processQueue = async () => {
     // 清理任务相关的临时文件
     if (nextTask.videoPath && existsSync(nextTask.videoPath)) {
         // 如果该任务是下载或上传的临时文件，处理完后自动清理
-        if (nextTask.isDownloaded) {
+        if (nextTask.isDownloaded && isTempCleanupCandidate(basename(nextTask.videoPath))) {
             try {
                 unlinkSync(nextTask.videoPath);
                 await log('INFO', `[Cleanup] 已清理临时视频文件: ${nextTask.videoPath}`);
@@ -285,12 +316,12 @@ const processVideoWithPython = (videoPath, maskPaths = [], maskRanges = "", task
     const pythonProcess = spawn(pythonExePath, args, { windowsHide: true, env });
 
     pythonProcess.stdout.on('data', (data) => {
-      const msg = data.toString().trim();
+      const msg = data.toString('utf8').trim();
       if (msg) log('INFO', `[Python] ${msg}`);
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      const msg = data.toString().trim();
+      const msg = data.toString('utf8').trim();
       if (msg) log('ERROR', `[Python ERR] ${msg}`);
     });
 
@@ -490,10 +521,11 @@ app.post("/api/presets", async (req, res) => {
 app.post("/api/upload", express.raw({ type: 'video/*', limit: '500mb' }), async (req, res) => {
   try {
     const ext = req.headers['x-file-ext'] || 'mp4';
+    const originalName = decodeHeaderFilename(req.headers['x-file-name'] || '');
     const fileName = `upload_${Date.now()}.${ext}`;
     const filePath = join(TEMP_DIR, fileName);
     await writeFile(filePath, req.body);
-    res.json({ url: `/temp/${fileName}`, localPath: filePath });
+    res.json({ url: `/temp/${fileName}`, localPath: filePath, originalName });
   } catch (err) {
     res.status(500).json({ message: "上传失败", error: err.message });
   }
@@ -555,15 +587,15 @@ app.delete("/api/tasks", async (req, res) => {
 // --- 提交新任务（异步，支持直接上传或 URL） ---
 app.post("/api/tasks", upload.single('video'), async (req, res) => {
   try {
-    let { videoUrl, videoLocalPath, presetName } = req.body;
+    let { videoUrl, videoLocalPath, presetName, videoName: requestedVideoName } = req.body;
     let videoPath = videoLocalPath || videoUrl;
     let isDownloaded = false;
-    let videoName = "";
+    let videoName = normalizeIncomingFilename(requestedVideoName || "");
 
     // 1. 优先处理直接上传的文件
     if (req.file) {
         videoPath = req.file.path;
-        videoName = req.file.originalname;
+        videoName = normalizeIncomingFilename(req.file.originalname);
         isDownloaded = true;
         await log('INFO', `检测到直接上传文件: ${videoName} -> ${videoPath}`);
     } 
@@ -572,14 +604,14 @@ app.post("/api/tasks", upload.single('video'), async (req, res) => {
         await log('INFO', `检测到远程 URL，开始下载: ${videoPath}`);
         const downloadResult = await download(videoPath, TEMP_DIR, 'api_down');
         videoPath = downloadResult.localPath;
-        videoName = downloadResult.fileName;
+        videoName = videoName || downloadResult.fileName;
         isDownloaded = true;
     } 
     // 3. 处理本地路径
     else if (videoPath) {
-        videoName = basename(videoPath);
+        videoName = videoName || basename(videoPath);
         // 如果本地路径已经在 TEMP_DIR 中（可能是之前上传的），也标记为临时文件以便清理
-        if (videoPath.includes(TEMP_DIR) || videoPath.includes('data/temp') || videoPath.includes('data\\temp')) {
+        if (isTempCleanupCandidate(basename(videoPath))) {
             isDownloaded = true;
         }
     }
